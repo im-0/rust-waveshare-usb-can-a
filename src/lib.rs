@@ -26,6 +26,7 @@
 
 // TODO: Implement more features from the original Windows app.
 // TODO: How serial baud rate works and why there is a "Reset" button?
+// TODO: Does the adapter set the ACL bit in the CAN frame on receive? Test with a second adapter.
 
 use core::panic;
 use std::{
