@@ -287,6 +287,8 @@ const PROTO_TYPE_VARIABLE_MASK: u8 = PROTO_TYPE_VARIABLE;
 const PROTO_TYPE_FLAG_EXTENDED: u8 = 0b00100000;
 const PROTO_TYPE_FLAG_REMOTE: u8 = 0b00010000;
 
+const PROTO_TYPE_SIZE_MASK: u8 = 0b00001111;
+
 const PROTO_END: u8 = 0x55;
 
 pub struct Usb2Can {
@@ -457,7 +459,7 @@ impl ReceiverState {
                     Id::Extended(ExtendedId::ZERO)
                 };
 
-                let data_len = (byte & 0b00001111) as usize;
+                let data_len = (byte & PROTO_TYPE_SIZE_MASK) as usize;
                 if data_len > 8 {
                     return Err(Error::RecvUnexpected(format!(
                         "Expected type, received 0x{:02x} (data length > 8)",
