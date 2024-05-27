@@ -17,6 +17,7 @@ use thiserror::Error;
 use tracing::{debug, trace};
 
 pub const DEFAULT_SERIAL_BAUD_RATE: u32 = 2000000;
+pub const DEFAULT_SERIAL_RECEIVE_TIMEOUT: Duration = Duration::from_millis(1000);
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -46,6 +47,7 @@ pub type Result<T> = result::Result<T, Error>;
 pub struct Usb2CanBuilder {
     path: String,
     serial_baud_rate: u32,
+    serial_receive_timeout: Duration,
     can_baud_rate: CanBaudRate,
     extended_frame: bool,
     loopback: bool,
@@ -63,6 +65,12 @@ impl Usb2CanBuilder {
     #[must_use]
     pub fn serial_baud_rate(mut self, serial_baud_rate: u32) -> Self {
         self.serial_baud_rate = serial_baud_rate;
+        self
+    }
+
+    #[must_use]
+    pub fn serial_receive_timeout(mut self, serial_receive_timeout: Duration) -> Self {
+        self.serial_receive_timeout = serial_receive_timeout;
         self
     }
 
@@ -97,13 +105,12 @@ impl Usb2CanBuilder {
     }
 
     pub fn open(self) -> Result<Usb2Can> {
-        // TODO: Configurable timeout.
         debug!("Opening USB2CAN with configuration {:?}", self);
 
         let serial = serialport::new(&self.path, self.serial_baud_rate)
             .data_bits(DataBits::Eight)
             .stop_bits(StopBits::Two)
-            .timeout(Duration::from_secs(4));
+            .timeout(self.serial_receive_timeout);
         let serial = serial.open()?;
         debug!("Serial port opened: {:?}", serial.name());
 
@@ -126,6 +133,7 @@ pub fn new<'a>(path: impl Into<Cow<'a, str>>, can_baud_rate: CanBaudRate) -> Usb
     Usb2CanBuilder {
         path: path.into().into_owned(),
         serial_baud_rate: DEFAULT_SERIAL_BAUD_RATE,
+        serial_receive_timeout: DEFAULT_SERIAL_RECEIVE_TIMEOUT,
         can_baud_rate,
         extended_frame: false,
         loopback: false,
