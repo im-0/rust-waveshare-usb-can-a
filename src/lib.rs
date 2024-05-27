@@ -779,6 +779,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn invalid_filter_conf() {
+        let builder = new("/dev/ttyUSB123", CanBaudRate::Kbitps1000);
+        let builder = builder.filter(StandardId::ZERO.into(), ExtendedId::ZERO.into());
+        assert!(matches!(builder, Err(Error::Configuration(_))));
+
+        let builder = new("/dev/ttyUSB123", CanBaudRate::Kbitps1000);
+        let builder = builder.filter(ExtendedId::ZERO.into(), StandardId::ZERO.into());
+        assert!(matches!(builder, Err(Error::Configuration(_))));
+    }
+
+    #[test]
     fn small_send_message_size() {
         // Smallest message.
         let frame = Frame::new_remote(StandardId::MAX, 0).unwrap();
@@ -810,6 +821,150 @@ mod tests {
         assert_eq!(message[3], 0xff);
         assert_eq!(message[4], 0xff);
         assert_eq!(message[5], 0x1f);
+    }
+
+    #[test]
+    fn data_frame_data_too_long() {
+        let frame = Frame::new(StandardId::ZERO, &[0; 9]);
+        assert!(frame.is_none());
+    }
+
+    #[test]
+    fn remote_frame_data_too_long() {
+        let frame = Frame::new_remote(StandardId::ZERO, 9);
+        assert!(frame.is_none());
+    }
+
+    #[test]
+    fn standard_data_frame_short() {
+        let frame = Frame::new(StandardId::MAX, &[]).unwrap();
+        let message = frame.to_message();
+        assert_eq!(
+            message,
+            [
+                0xaa, // Header
+                0xc0, // Type | flags | length
+                0xff, 0x07, // ID
+                0x55, // End
+            ]
+        );
+    }
+
+    #[test]
+    fn standard_data_frame_long() {
+        let frame = Frame::new(
+            StandardId::MAX,
+            &[0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef],
+        )
+        .unwrap();
+        let message = frame.to_message();
+        assert_eq!(
+            message,
+            [
+                0xaa, // Header
+                0xc8, // Type | flags | length
+                0xff, 0x07, // ID
+                0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, // Data
+                0x55, // End
+            ]
+        );
+    }
+
+    #[test]
+    fn extended_data_frame_short() {
+        let frame = Frame::new(ExtendedId::MAX, &[]).unwrap();
+        let message = frame.to_message();
+        assert_eq!(
+            message,
+            [
+                0xaa, // Header
+                0xe0, // Type | flags | length
+                0xff, 0xff, 0xff, 0x1f, // Id
+                0x55, // End
+            ]
+        );
+    }
+
+    #[test]
+    fn extended_data_frame_long() {
+        let frame = Frame::new(
+            ExtendedId::MAX,
+            &[0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef],
+        )
+        .unwrap();
+        let message = frame.to_message();
+        assert_eq!(
+            message,
+            [
+                0xaa, // Header
+                0xe8, // Type | flags | length
+                0xff, 0xff, 0xff, 0x1f, // Id
+                0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, // Data
+                0x55, // End
+            ]
+        );
+    }
+
+    #[test]
+    fn standard_remote_frame_short() {
+        let frame = Frame::new_remote(StandardId::MAX, 0).unwrap();
+        let message = frame.to_message();
+        assert_eq!(
+            message,
+            [
+                0xaa, // Header
+                0xd0, // Type | flags | length
+                0xff, 0x07, // ID
+                0x55, // End
+            ]
+        );
+    }
+
+    #[test]
+    fn standard_remote_frame_long() {
+        let frame = Frame::new_remote(StandardId::MAX, 8).unwrap();
+        let message = frame.to_message();
+        assert_eq!(
+            message,
+            [
+                0xaa, // Header
+                0xd8, // Type | flags | length
+                0xff, 0x07, // ID
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Data placeholder
+                0x55, // End
+            ]
+        );
+    }
+
+    #[test]
+    fn extended_remote_frame_short() {
+        let frame = Frame::new_remote(ExtendedId::MAX, 0).unwrap();
+        let message = frame.to_message();
+        assert_eq!(
+            message,
+            [
+                0xaa, // Header
+                0xf0, // Type | flags | length
+                0xff, 0xff, 0xff, 0x1f, // Id
+                0x55, // End
+            ]
+        );
+    }
+
+    #[test]
+    fn extended_remote_frame_long() {
+        let frame = Frame::new_remote(ExtendedId::MAX, 8).unwrap();
+        let message = frame.to_message();
+        assert_eq!(
+            message,
+            [
+                0xaa, // Header
+                0xf8, // Type | flags | length
+                0xff, 0xff, 0xff, 0x1f, // Id
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Data placeholder
+                0x55, // End
+            ]
+        );
     }
 
     #[test]
