@@ -77,7 +77,7 @@ fn run_dump(args: &cli::Cli, options: &cli::DumpOptions) -> Result<()> {
     // Dump traffic on CAN bus.
     loop {
         if let Err(error) = receive(&mut usb2can) {
-            error!("{}", error);
+            error!("{:?}", error);
         }
     }
 }
