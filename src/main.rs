@@ -24,50 +24,32 @@
 #![warn(clippy::checked_conversions)]
 #![warn(clippy::type_repetition_in_bounds)]
 
-use std::time::Duration;
-
 use anyhow::{Context, Result};
 use clap::Parser;
 use embedded_can::{blocking::Can, StandardId};
 use embedded_can::{ExtendedId, Frame as _, Id};
 use tracing::info;
+use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 use waveshare_usb_can_a::{CanBaudRate, Frame, Usb2Can};
 
-#[derive(Parser)]
-#[command(about, version)]
-pub struct Cli {
-    /// Transmit test data frames onto the actual CAN bus in addition to the normal loopback test.
-    #[arg(short = 'S', long)]
-    pub send_frames: bool,
-
-    /// Serial receive timeout.
-    #[arg(short = 't', long, value_name = "MILLISECONDS", default_value = "1000", value_parser = parse_duration)]
-    pub receive_timeout: Duration,
-
-    /// Path to the serial device file of the USB2CAN adapter.
-    pub serial_path: String,
-}
-
-fn parse_duration(duration: &str) -> Result<Duration> {
-    Ok(Duration::from_millis(
-        duration
-            .parse::<u64>()
-            .with_context(|| format!("Unable to parse milliseconds \"{}\"", duration))?,
-    ))
-}
+mod cli;
 
 fn main() -> Result<()> {
     // Configure logging.
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
-        .with(EnvFilter::from_default_env())
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
         .init();
 
     // Parse command line arguments.
-    let args = Cli::parse();
+    let args = cli::Cli::parse();
 
     // Run tests with different settings.
     info!("Starting loopback self-test for the Waveshare USB-CAN-A adapter...");

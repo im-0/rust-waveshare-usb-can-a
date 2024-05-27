@@ -4,18 +4,30 @@ version = "0.1.0"
 edition = "2021"
 
 authors = ["Ivan Mironov <mironov.ivan@gmail.com>"]
-description = "Library for Waveshare's USB to CAN Adapter Model A"
+description = "CLI and library for Waveshare's USB to CAN Adapter Model A"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/im-0/rust-waveshare-usb-can-a"
 readme = "README.md"
 keywords = [
     "usb",
     "can",
+    "cli",
     "serial",
 ]
 categories = [
+    "command-line-utilities",
     "hardware-support",
 ]
+
+[dependencies.anyhow]
+version = "1.0.86"
+default_features = false
+features = ["std"]
+
+[dependencies.clap]
+version = "4.5.4"
+default_features = false
+features = ["cargo", "color", "derive", "error-context", "help", "std", "usage", "wrap_help"]
 
 [dependencies.embedded-can]
 version = "0.4.1"
@@ -37,17 +49,7 @@ version = "0.1.40"
 default_features = false
 features = ["std"]
 
-[dev-dependencies.anyhow]
-version = "1.0.86"
-default_features = false
-features = ["std"]
-
-[dev-dependencies.clap]
-version = "4.5.4"
-default_features = false
-features = ["cargo", "color", "derive", "error-context", "help", "std", "usage", "wrap_help"]
-
-[dev-dependencies.tracing-subscriber]
+[dependencies.tracing-subscriber]
 version = "0.3.18"
 default_features = false
 features = [
