@@ -686,6 +686,65 @@ impl embedded_can::Frame for Frame {
     }
 }
 
+impl Display for Frame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Type and data length.
+        if self.is_remote_frame() {
+            write!(f, "REMOTE {} ", self.dlc())?;
+        } else {
+            write!(f, "  DATA {} ", self.dlc())?;
+        }
+
+        // Identifier.
+        let (base_id, extended_id) = {
+            match self.id {
+                Id::Standard(standard_id) => (standard_id.as_raw(), None),
+
+                Id::Extended(extended_id) => (
+                    extended_id.standard_id().as_raw(),
+                    Some(extended_id.as_raw() & ((1 << 18) - 1)), // Bits ID-17 to ID-0
+                ),
+            }
+        };
+        write!(f, "{:03x}", base_id)?;
+        if let Some(extended_id) = extended_id {
+            write!(f, ".{:05x} ", extended_id)?;
+        } else {
+            write!(f, "       ")?;
+        }
+
+        // Data.
+        if self.is_remote_frame() {
+            write!(f, "                                ")?;
+        } else {
+            // Print as hex.
+            for byte in self.data() {
+                write!(f, "{:02x} ", byte)?;
+            }
+            for _ in self.dlc()..8 {
+                write!(f, "__ ")?;
+            }
+
+            // Print printable characters as ASCII.
+            for byte in self.data() {
+                let char = char::from_u32(*byte as u32).map_or('.', |char| {
+                    if char.is_ascii_graphic() {
+                        char
+                    } else {
+                        '.'
+                    }
+                });
+                write!(f, "{}", char)?;
+            }
+            for _ in self.dlc()..8 {
+                write!(f, " ")?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
 trait IdToBytes<const N: usize> {
     fn to_bytes(self) -> [u8; N];
 }

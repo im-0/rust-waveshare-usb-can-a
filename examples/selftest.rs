@@ -138,7 +138,7 @@ fn main() -> Result<()> {
 
                     let wrong_frame = Frame::new(wrong_id, &[7, 6, 5, 4, 3, 2, 1, 0])
                         .expect("Logic error: bad test frame");
-                    info!("<- {:?}", wrong_frame);
+                    info!("<- {}", wrong_frame);
                     usb2can
                         .transmit(&wrong_frame)
                         .context("Failed to transmit wrong CAN frame")?;
@@ -172,13 +172,13 @@ fn main() -> Result<()> {
 }
 
 fn check_echo(usb2can: &mut Usb2Can, frame: &Frame) -> Result<()> {
-    info!("<- {:?}", frame);
+    info!("<- {}", frame);
     usb2can
         .transmit(frame)
         .context("Failed to transmit CAN frame")?;
 
     let received = usb2can.receive().context("Failed to receive CAN frame")?;
-    info!("-> {:?}", received);
+    info!("-> {}", received);
 
     assert_eq!(frame, &received);
     Ok(())
