@@ -24,12 +24,14 @@
 #![warn(clippy::checked_conversions)]
 #![warn(clippy::type_repetition_in_bounds)]
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use embedded_can::{blocking::Can, StandardId};
 use embedded_can::{ExtendedId, Frame as _, Id};
-use tracing::info;
 use tracing::level_filters::LevelFilter;
+use tracing::{error, info};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
@@ -52,7 +54,30 @@ fn main() -> Result<()> {
     let args = cli::Cli::parse();
 
     match &args.subcommand {
+        cli::SubCommand::Dump(options) => run_dump(&args, options),
         cli::SubCommand::SelfTest(options) => run_self_test(&args, options),
+    }
+}
+
+fn run_dump(args: &cli::Cli, options: &cli::DumpOptions) -> Result<()> {
+    // Open USB2CAN adapter.
+    let usb2can = waveshare_usb_can_a::new(&args.serial_path, options.can_baud_rate)
+        .serial_receive_timeout(options.receive_timeout)
+        .receive_only_extended_frames(options.receive_only_extended_frames);
+
+    let usb2can = if let Some(filter_with_mask) = &options.filter_with_mask {
+        usb2can.filter(filter_with_mask.filter, filter_with_mask.mask)?
+    } else {
+        usb2can
+    };
+
+    let mut usb2can = usb2can.open().context("Failed to open USB2CAN device")?;
+
+    // Dump traffic on CAN bus.
+    loop {
+        if let Err(error) = receive(&mut usb2can) {
+            error!("{}", error);
+        }
     }
 }
 
@@ -113,7 +138,6 @@ fn run_self_test(args: &cli::Cli, options: &cli::SelfTestOptions) -> Result<()> 
                     .loopback(true)
                     .silent(!options.send_frames)
                     .automatic_retransmission(false)
-                    .extended_frame(extended_frame)
                     .open()
                     .context("Failed to open USB2CAN device")?;
 
@@ -126,10 +150,7 @@ fn run_self_test(args: &cli::Cli, options: &cli::SelfTestOptions) -> Result<()> 
 
                     let wrong_frame = Frame::new(wrong_id, &[7, 6, 5, 4, 3, 2, 1, 0])
                         .expect("Logic error: bad test frame");
-                    info!("<- {}", wrong_frame);
-                    usb2can
-                        .transmit(&wrong_frame)
-                        .context("Failed to transmit wrong CAN frame")?;
+                    transmit(&mut usb2can, &wrong_frame)?;
                 }
 
                 let id: Id = if extended_frame {
@@ -160,14 +181,33 @@ fn run_self_test(args: &cli::Cli, options: &cli::SelfTestOptions) -> Result<()> 
 }
 
 fn check_echo(usb2can: &mut Usb2Can, frame: &Frame) -> Result<()> {
-    info!("<- {}", frame);
-    usb2can
-        .transmit(frame)
-        .context("Failed to transmit CAN frame")?;
-
-    let received = usb2can.receive().context("Failed to receive CAN frame")?;
-    info!("-> {}", received);
+    transmit(usb2can, frame)?;
+    let received = receive(usb2can)?;
 
     assert_eq!(frame, &received);
     Ok(())
+}
+
+fn transmit(usb2can: &mut Usb2Can, frame: &Frame) -> Result<()> {
+    #![allow(clippy::print_stdout)]
+
+    println!("{:.03} <- {}", timestamp()?, frame);
+    usb2can
+        .transmit(frame)
+        .context("Failed to transmit CAN frame")
+}
+
+fn receive(usb2can: &mut Usb2Can) -> Result<Frame> {
+    #![allow(clippy::print_stdout)]
+
+    let frame = usb2can.receive().context("Failed to receive CAN frame")?;
+    println!("{:.03} -> {}", timestamp()?, frame);
+    Ok(frame)
+}
+
+fn timestamp() -> Result<f64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("Failed to get current time")
+        .map(|timestamp| timestamp.as_secs_f64())
 }

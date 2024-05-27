@@ -34,6 +34,7 @@ use std::{
     fmt::{self, Display},
     io::{self, Read},
     result,
+    str::FromStr,
     thread::sleep,
     time::Duration,
 };
@@ -79,7 +80,7 @@ pub struct Usb2CanBuilder {
     serial_baud_rate: u32,
     serial_receive_timeout: Duration,
     can_baud_rate: CanBaudRate,
-    extended_frame: bool,
+    receive_only_extended_frames: bool,
     filter: Id,
     mask: Id,
     loopback: bool,
@@ -113,8 +114,8 @@ impl Usb2CanBuilder {
     }
 
     #[must_use]
-    pub const fn extended_frame(mut self, extended_frame: bool) -> Self {
-        self.extended_frame = extended_frame;
+    pub const fn receive_only_extended_frames(mut self, extended_frame: bool) -> Self {
+        self.receive_only_extended_frames = extended_frame;
         self
     }
 
@@ -161,10 +162,7 @@ impl Usb2CanBuilder {
         let serial = serial.open()?;
         debug!("Serial port opened: {:?}", serial.name());
 
-        let mut usb2can = Usb2Can {
-            serial,
-            extended_frame: self.extended_frame,
-        };
+        let mut usb2can = Usb2Can { serial };
         usb2can.configure(&self)?;
         Ok(usb2can)
     }
@@ -176,7 +174,7 @@ pub fn new<'a>(path: impl Into<Cow<'a, str>>, can_baud_rate: CanBaudRate) -> Usb
         serial_baud_rate: DEFAULT_SERIAL_BAUD_RATE,
         serial_receive_timeout: DEFAULT_SERIAL_RECEIVE_TIMEOUT,
         can_baud_rate,
-        extended_frame: false,
+        receive_only_extended_frames: false,
         filter: ExtendedId::ZERO.into(),
         mask: ExtendedId::ZERO.into(),
         loopback: false,
@@ -243,6 +241,31 @@ impl Display for CanBaudRate {
     }
 }
 
+impl FromStr for CanBaudRate {
+    type Err = Error;
+
+    fn from_str(s: &str) -> result::Result<Self, Self::Err> {
+        match s {
+            "5" => Ok(Self::Kbitps5),
+            "10" => Ok(Self::Kbitps10),
+            "20" => Ok(Self::Kbitps20),
+            "50" => Ok(Self::Kbitps50),
+            "100" => Ok(Self::Kbitps100),
+            "125" => Ok(Self::Kbitps125),
+            "200" => Ok(Self::Kbitps200),
+            "250" => Ok(Self::Kbitps250),
+            "400" => Ok(Self::Kbitps400),
+            "500" => Ok(Self::Kbitps500),
+            "800" => Ok(Self::Kbitps800),
+            "1000" => Ok(Self::Kbitps1000),
+            _ => Err(Error::Configuration(format!(
+                "Invalid CAN baud rate: {}",
+                s
+            ))),
+        }
+    }
+}
+
 const PROTO_HEADER: u8 = 0xaa;
 const PROTO_HEADER_FIXED: u8 = 0x55;
 
@@ -268,7 +291,6 @@ const PROTO_END: u8 = 0x55;
 
 pub struct Usb2Can {
     serial: Box<dyn SerialPort>,
-    extended_frame: bool,
 }
 
 impl Usb2Can {
@@ -288,7 +310,7 @@ impl Usb2Can {
             // CAN bus speed
             configuration.can_baud_rate.to_config_value(),
             // Frame type
-            if configuration.extended_frame {
+            if configuration.receive_only_extended_frames {
                 PROTO_CFG_FRAME_EXTENDED
             } else {
                 PROTO_CFG_FRAME_NORMAL
@@ -367,10 +389,7 @@ impl Usb2Can {
 
     pub fn try_clone(&self) -> Result<Self> {
         let serial = self.serial.try_clone()?;
-        Ok(Self {
-            serial,
-            extended_frame: self.extended_frame,
-        })
+        Ok(Self { serial })
     }
 }
 
@@ -381,19 +400,6 @@ impl blocking::Can for Usb2Can {
 
     fn transmit(&mut self, frame: &Frame) -> Result<()> {
         trace!("Transmitting frame: {:?}", frame);
-
-        if frame.is_extended() {
-            if !self.extended_frame {
-                return Err(Error::SendingInvalidFrame(
-                    "Trying to send extended frame but adapter configured for standard".into(),
-                ));
-            }
-        } else if self.extended_frame {
-            return Err(Error::SendingInvalidFrame(
-                "Trying to send standard frame but adapter configured for extended".into(),
-            ));
-        }
-
         self.serial_write(&frame.to_message())
     }
 
