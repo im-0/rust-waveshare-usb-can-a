@@ -96,7 +96,9 @@ fn run_inject(args: &cli::Cli, options: &cli::InjectOptions) -> Result<()> {
         }
 
         if let Some(delay) = &options.loop_inject {
-            std::thread::sleep(*delay);
+            if delay.as_millis() > 0 {
+                std::thread::sleep(*delay);
+            }
         } else {
             break;
         }
