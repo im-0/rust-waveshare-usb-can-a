@@ -51,6 +51,12 @@ fn main() -> Result<()> {
     // Parse command line arguments.
     let args = cli::Cli::parse();
 
+    match &args.subcommand {
+        cli::SubCommand::SelfTest(options) => run_self_test(&args, options),
+    }
+}
+
+fn run_self_test(args: &cli::Cli, options: &cli::SelfTestOptions) -> Result<()> {
     // Run tests with different settings.
     info!("Starting loopback self-test for the Waveshare USB-CAN-A adapter...");
     for can_baud_rate in [
@@ -103,9 +109,9 @@ fn main() -> Result<()> {
                 // Open USB2CAN adapter.
                 let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, can_baud_rate)
                     .filter(filter, mask)?
-                    .serial_receive_timeout(args.receive_timeout)
+                    .serial_receive_timeout(options.receive_timeout)
                     .loopback(true)
-                    .silent(!args.send_frames)
+                    .silent(!options.send_frames)
                     .automatic_retransmission(false)
                     .extended_frame(extended_frame)
                     .open()
