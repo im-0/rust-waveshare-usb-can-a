@@ -55,6 +55,7 @@ fn main() -> Result<()> {
 
     match &args.subcommand {
         cli::SubCommand::Dump(options) => run_dump(&args, options),
+        cli::SubCommand::Inject(options) => run_inject(&args, options),
         cli::SubCommand::SelfTest(options) => run_self_test(&args, options),
     }
 }
@@ -79,6 +80,21 @@ fn run_dump(args: &cli::Cli, options: &cli::DumpOptions) -> Result<()> {
             error!("{}", error);
         }
     }
+}
+
+fn run_inject(args: &cli::Cli, options: &cli::InjectOptions) -> Result<()> {
+    // Open USB2CAN adapter.
+    let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, options.can_baud_rate)
+        .automatic_retransmission(options.automatic_retransmission)
+        .open()
+        .context("Failed to open USB2CAN device")?;
+
+    // Inject frames into CAN bus.
+    for frame in &options.frames {
+        transmit(&mut usb2can, frame)?;
+    }
+
+    Ok(())
 }
 
 fn run_self_test(args: &cli::Cli, options: &cli::SelfTestOptions) -> Result<()> {
