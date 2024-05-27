@@ -58,6 +58,10 @@ pub(crate) struct InjectOptions {
     #[arg(short = 'r', long)]
     pub automatic_retransmission: bool,
 
+    /// Inject packets in an infinte loop. Argument is the delay between each loop iteration.
+    #[arg(short = 'l', long, value_name = "MILLISECONDS", value_parser = parse_duration_ms)]
+    pub loop_inject: Option<Duration>,
+
     /// CAN bus baud rate.
     #[arg(value_name = "KBITS_PER_S")]
     pub can_baud_rate: CanBaudRate,

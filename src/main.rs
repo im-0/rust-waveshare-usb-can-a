@@ -90,8 +90,16 @@ fn run_inject(args: &cli::Cli, options: &cli::InjectOptions) -> Result<()> {
         .context("Failed to open USB2CAN device")?;
 
     // Inject frames into CAN bus.
-    for frame in &options.frames {
-        transmit(&mut usb2can, frame)?;
+    loop {
+        for frame in &options.frames {
+            transmit(&mut usb2can, frame)?;
+        }
+
+        if let Some(delay) = &options.loop_inject {
+            std::thread::sleep(*delay);
+        } else {
+            break;
+        }
     }
 
     Ok(())
