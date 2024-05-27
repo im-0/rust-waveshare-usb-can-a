@@ -1,3 +1,29 @@
+#![deny(unsafe_code)]
+#![warn(unused_results)]
+#![warn(private_interfaces)]
+#![warn(private_bounds)]
+#![warn(clippy::empty_line_after_outer_attr)]
+#![warn(clippy::manual_filter_map)]
+#![warn(clippy::if_not_else)]
+#![warn(clippy::mut_mut)]
+#![warn(clippy::non_ascii_literal)]
+#![warn(clippy::map_unwrap_or)]
+#![warn(clippy::use_self)]
+#![warn(clippy::used_underscore_binding)]
+#![warn(clippy::print_stdout)]
+#![warn(clippy::print_stderr)]
+#![warn(clippy::map_flatten)]
+#![warn(clippy::wildcard_dependencies)]
+#![warn(clippy::cargo_common_metadata)]
+#![warn(clippy::wildcard_enum_match_arm)]
+#![warn(clippy::missing_const_for_fn)]
+#![warn(clippy::dbg_macro)]
+#![warn(clippy::path_buf_push_overwrite)]
+#![warn(clippy::manual_find_map)]
+#![warn(clippy::filter_map_next)]
+#![warn(clippy::checked_conversions)]
+#![warn(clippy::type_repetition_in_bounds)]
+
 // TODO: Implement more features from the original Windows app.
 // TODO: How serial baud rate works and why there is a "Reset" button?
 
@@ -63,43 +89,43 @@ impl Usb2CanBuilder {
     }
 
     #[must_use]
-    pub fn serial_baud_rate(mut self, serial_baud_rate: u32) -> Self {
+    pub const fn serial_baud_rate(mut self, serial_baud_rate: u32) -> Self {
         self.serial_baud_rate = serial_baud_rate;
         self
     }
 
     #[must_use]
-    pub fn serial_receive_timeout(mut self, serial_receive_timeout: Duration) -> Self {
+    pub const fn serial_receive_timeout(mut self, serial_receive_timeout: Duration) -> Self {
         self.serial_receive_timeout = serial_receive_timeout;
         self
     }
 
     #[must_use]
-    pub fn can_baud_rate(mut self, can_baud_rate: CanBaudRate) -> Self {
+    pub const fn can_baud_rate(mut self, can_baud_rate: CanBaudRate) -> Self {
         self.can_baud_rate = can_baud_rate;
         self
     }
 
     #[must_use]
-    pub fn extended_frame(mut self, extended_frame: bool) -> Self {
+    pub const fn extended_frame(mut self, extended_frame: bool) -> Self {
         self.extended_frame = extended_frame;
         self
     }
 
     #[must_use]
-    pub fn loopback(mut self, loopback: bool) -> Self {
+    pub const fn loopback(mut self, loopback: bool) -> Self {
         self.loopback = loopback;
         self
     }
 
     #[must_use]
-    pub fn silent(mut self, silent: bool) -> Self {
+    pub const fn silent(mut self, silent: bool) -> Self {
         self.silent = silent;
         self
     }
 
     #[must_use]
-    pub fn automatic_retransmission(mut self, automatic_retransmission: bool) -> Self {
+    pub const fn automatic_retransmission(mut self, automatic_retransmission: bool) -> Self {
         self.automatic_retransmission = automatic_retransmission;
         self
     }
@@ -159,37 +185,37 @@ pub enum CanBaudRate {
 }
 
 impl CanBaudRate {
-    pub fn to_baud_rate(&self) -> u32 {
+    pub const fn to_baud_rate(&self) -> u32 {
         match self {
-            CanBaudRate::Kbitps5 => 5_000,
-            CanBaudRate::Kbitps10 => 10_000,
-            CanBaudRate::Kbitps20 => 20_000,
-            CanBaudRate::Kbitps50 => 50_000,
-            CanBaudRate::Kbitps100 => 100_000,
-            CanBaudRate::Kbitps125 => 125_000,
-            CanBaudRate::Kbitps200 => 200_000,
-            CanBaudRate::Kbitps250 => 250_000,
-            CanBaudRate::Kbitps400 => 400_000,
-            CanBaudRate::Kbitps500 => 500_000,
-            CanBaudRate::Kbitps800 => 800_000,
-            CanBaudRate::Kbitps1000 => 1_000_000,
+            Self::Kbitps5 => 5_000,
+            Self::Kbitps10 => 10_000,
+            Self::Kbitps20 => 20_000,
+            Self::Kbitps50 => 50_000,
+            Self::Kbitps100 => 100_000,
+            Self::Kbitps125 => 125_000,
+            Self::Kbitps200 => 200_000,
+            Self::Kbitps250 => 250_000,
+            Self::Kbitps400 => 400_000,
+            Self::Kbitps500 => 500_000,
+            Self::Kbitps800 => 800_000,
+            Self::Kbitps1000 => 1_000_000,
         }
     }
 
-    fn to_config_value(self) -> u8 {
+    const fn to_config_value(self) -> u8 {
         match self {
-            CanBaudRate::Kbitps5 => 0x0c,
-            CanBaudRate::Kbitps10 => 0x0b,
-            CanBaudRate::Kbitps20 => 0x0a,
-            CanBaudRate::Kbitps50 => 0x09,
-            CanBaudRate::Kbitps100 => 0x08,
-            CanBaudRate::Kbitps125 => 0x07,
-            CanBaudRate::Kbitps200 => 0x06,
-            CanBaudRate::Kbitps250 => 0x05,
-            CanBaudRate::Kbitps400 => 0x04,
-            CanBaudRate::Kbitps500 => 0x03,
-            CanBaudRate::Kbitps800 => 0x02,
-            CanBaudRate::Kbitps1000 => 0x01,
+            Self::Kbitps5 => 0x0c,
+            Self::Kbitps10 => 0x0b,
+            Self::Kbitps20 => 0x0a,
+            Self::Kbitps50 => 0x09,
+            Self::Kbitps100 => 0x08,
+            Self::Kbitps125 => 0x07,
+            Self::Kbitps200 => 0x06,
+            Self::Kbitps250 => 0x05,
+            Self::Kbitps400 => 0x04,
+            Self::Kbitps500 => 0x03,
+            Self::Kbitps800 => 0x02,
+            Self::Kbitps1000 => 0x01,
         }
     }
 }
@@ -329,7 +355,7 @@ impl Usb2Can {
 
     pub fn try_clone(&self) -> Result<Self> {
         let serial = self.serial.try_clone()?;
-        Ok(Usb2Can {
+        Ok(Self {
             serial,
             extended_frame: self.extended_frame,
         })
@@ -391,15 +417,15 @@ impl ReceiverState {
 
     fn advance(self, byte: u8) -> Result<Self> {
         let next_state = match (self, byte) {
-            (ReceiverState::Header, PROTO_HEADER) => ReceiverState::Type,
-            (ReceiverState::Header, byte) => {
+            (Self::Header, PROTO_HEADER) => Self::Type,
+            (Self::Header, byte) => {
                 return Err(Error::RecvUnexpected(format!(
                     "Expected header, received 0x{:02x} (!= 0x{:02x})",
                     byte, PROTO_HEADER
                 )))
             }
 
-            (ReceiverState::Type, byte) => {
+            (Self::Type, byte) => {
                 if byte & PROTO_TYPE_VARIABLE_MASK != PROTO_TYPE_VARIABLE {
                     return Err(Error::RecvUnexpected(format!(
                         "Expected type, received 0x{:02x} (0x{:02x} not set)",
@@ -433,14 +459,14 @@ impl ReceiverState {
                     }
                 };
 
-                ReceiverState::Id {
+                Self::Id {
                     bytes_left: if frame.is_extended() { 3 } else { 1 },
                     frame,
                 }
             }
 
             (
-                ReceiverState::Id {
+                Self::Id {
                     bytes_left,
                     mut frame,
                 },
@@ -472,17 +498,17 @@ impl ReceiverState {
 
                 if bytes_left == 0 {
                     if frame.dlc() == 0 {
-                        ReceiverState::End(frame)
+                        Self::End(frame)
                     } else if frame.is_remote_frame() {
-                        ReceiverState::SkipRemote {
+                        Self::SkipRemote {
                             bytes_left: frame.dlc(),
                             frame,
                         }
                     } else {
-                        ReceiverState::Data { byte_n: 0, frame }
+                        Self::Data { byte_n: 0, frame }
                     }
                 } else {
-                    ReceiverState::Id {
+                    Self::Id {
                         bytes_left: bytes_left - 1,
                         frame,
                     }
@@ -490,7 +516,7 @@ impl ReceiverState {
             }
 
             (
-                ReceiverState::Data {
+                Self::Data {
                     mut byte_n,
                     mut frame,
                 },
@@ -501,9 +527,9 @@ impl ReceiverState {
 
                     byte_n += 1;
                     if byte_n == data.len() {
-                        ReceiverState::End(frame)
+                        Self::End(frame)
                     } else {
-                        ReceiverState::Data { byte_n, frame }
+                        Self::Data { byte_n, frame }
                     }
                 }
 
@@ -513,7 +539,7 @@ impl ReceiverState {
             },
 
             (
-                ReceiverState::SkipRemote {
+                Self::SkipRemote {
                     mut bytes_left,
                     frame,
                 },
@@ -521,21 +547,21 @@ impl ReceiverState {
             ) => {
                 bytes_left -= 1;
                 if bytes_left == 0 {
-                    ReceiverState::End(frame)
+                    Self::End(frame)
                 } else {
-                    ReceiverState::SkipRemote { bytes_left, frame }
+                    Self::SkipRemote { bytes_left, frame }
                 }
             }
 
-            (ReceiverState::End(frame), PROTO_END) => ReceiverState::Finished(frame),
-            (ReceiverState::End(_), byte) => {
+            (Self::End(frame), PROTO_END) => Self::Finished(frame),
+            (Self::End(_), byte) => {
                 return Err(Error::RecvUnexpected(format!(
                     "Expected end, received 0x{:02x} (!= 0x{:02x})",
                     byte, PROTO_END
                 )))
             }
 
-            (ReceiverState::Finished(_), _) => {
+            (Self::Finished(_), _) => {
                 panic!("Logic error: trying to advance finished state")
             }
         };
@@ -603,7 +629,7 @@ impl embedded_can::Frame for Frame {
         if data.len() > 8 {
             None
         } else {
-            Some(Frame {
+            Some(Self {
                 id: id.into(),
                 data: FrameData::Data(data.to_vec()),
             })
@@ -614,7 +640,7 @@ impl embedded_can::Frame for Frame {
         if dlc > 8 {
             None
         } else {
-            Some(Frame {
+            Some(Self {
                 id: id.into(),
                 data: FrameData::Remote(dlc),
             })
