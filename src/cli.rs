@@ -63,7 +63,7 @@ pub(crate) struct InjectOptions {
     pub can_baud_rate: CanBaudRate,
 
     /// Frames to inject.
-    #[arg(value_name = "FRAME", value_parser = parse_frame)]
+    #[arg(value_name = "FRAME", required = true, value_parser = parse_frame)]
     pub frames: Vec<Frame>,
 }
 
