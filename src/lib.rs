@@ -48,6 +48,9 @@ pub const DEFAULT_SERIAL_RECEIVE_TIMEOUT: Duration = Duration::from_millis(1000)
 
 #[derive(Error, Debug)]
 pub enum Error {
+    #[error("Configuration error: {0}")]
+    Configuration(String),
+
     #[error("Serial port error: {}", .0.description)]
     Serial(#[from] serialport::Error),
 
@@ -77,6 +80,8 @@ pub struct Usb2CanBuilder {
     serial_receive_timeout: Duration,
     can_baud_rate: CanBaudRate,
     extended_frame: bool,
+    filter: Id,
+    mask: Id,
     loopback: bool,
     silent: bool,
     automatic_retransmission: bool,
@@ -113,6 +118,21 @@ impl Usb2CanBuilder {
         self
     }
 
+    pub fn filter(mut self, filter: Id, mask: Id) -> Result<Self> {
+        match (&filter, &mask) {
+            (Id::Standard(_), Id::Extended(_)) | (Id::Extended(_), Id::Standard(_)) => {
+                return Err(Error::Configuration(
+                    "Filter and mask must have the same type (standard or extended)".into(),
+                ));
+            }
+            _ => {}
+        }
+
+        self.filter = filter;
+        self.mask = mask;
+        Ok(self)
+    }
+
     #[must_use]
     pub const fn loopback(mut self, loopback: bool) -> Self {
         self.loopback = loopback;
@@ -145,13 +165,7 @@ impl Usb2CanBuilder {
             serial,
             extended_frame: self.extended_frame,
         };
-        usb2can.configure(
-            self.can_baud_rate,
-            self.extended_frame,
-            self.loopback,
-            self.silent,
-            self.automatic_retransmission,
-        )?;
+        usb2can.configure(&self)?;
         Ok(usb2can)
     }
 }
@@ -163,6 +177,8 @@ pub fn new<'a>(path: impl Into<Cow<'a, str>>, can_baud_rate: CanBaudRate) -> Usb
         serial_receive_timeout: DEFAULT_SERIAL_RECEIVE_TIMEOUT,
         can_baud_rate,
         extended_frame: false,
+        filter: ExtendedId::ZERO.into(),
+        mask: ExtendedId::ZERO.into(),
         loopback: false,
         silent: false,
         automatic_retransmission: true,
@@ -258,14 +274,10 @@ pub struct Usb2Can {
 impl Usb2Can {
     const CONFIGURATION_DELAY: Duration = Duration::from_millis(100);
 
-    fn configure(
-        &mut self,
-        can_baud_rate: CanBaudRate,
-        extended_frame: bool,
-        loopback: bool,
-        silent: bool,
-        automatic_retransmission: bool,
-    ) -> Result<()> {
+    fn configure(&mut self, configuration: &Usb2CanBuilder) -> Result<()> {
+        let filter = id_to_bytes(configuration.filter);
+        let mask = id_to_bytes(configuration.mask);
+
         let mut config_message: [u8; 20] = [
             // Header
             PROTO_HEADER,
@@ -274,36 +286,35 @@ impl Usb2Can {
             // TODO: Make configurable.
             PROTO_TYPE_CFG_SET | PROTO_TYPE_CFG_SET_VARIABLE,
             // CAN bus speed
-            can_baud_rate.to_config_value(),
+            configuration.can_baud_rate.to_config_value(),
             // Frame type
-            if extended_frame {
+            if configuration.extended_frame {
                 PROTO_CFG_FRAME_EXTENDED
             } else {
                 PROTO_CFG_FRAME_NORMAL
             },
-            // Filter (not used)
-            // TODO: Use filters.
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            // Mask (not used)
-            0x00,
-            0x00,
-            0x00,
-            0x00,
+            // Filter
+            filter[0],
+            filter[1],
+            filter[2],
+            filter[3],
+            // Mask
+            mask[0],
+            mask[1],
+            mask[2],
+            mask[3],
             // CAN adapter mode
-            if loopback {
+            if configuration.loopback {
                 PROTO_CFG_MODE_FLAG_LOOPBACK
             } else {
                 0x00
-            } | if silent {
+            } | if configuration.silent {
                 PROTO_CFG_MODE_FLAG_SILENT
             } else {
                 0x00
             },
             // Automatic retransmission
-            if automatic_retransmission {
+            if configuration.automatic_retransmission {
                 PROTO_CFG_RETRANSMISSION_ENABLED
             } else {
                 PROTO_CFG_RETRANSMISSION_DISABLED
@@ -607,8 +618,8 @@ impl Frame {
 
         // Frame ID
         match self.id() {
-            Id::Standard(standard_id) => message.extend(standard_id.as_raw().to_le_bytes()),
-            Id::Extended(extended_id) => message.extend(extended_id.as_raw().to_le_bytes()),
+            Id::Standard(standard_id) => message.extend(standard_id.to_bytes()),
+            Id::Extended(extended_id) => message.extend(extended_id.to_bytes()),
         }
 
         // Data
@@ -672,6 +683,33 @@ impl embedded_can::Frame for Frame {
             FrameData::Data(data) => data,
             FrameData::Remote(_) => &[],
         }
+    }
+}
+
+trait IdToBytes<const N: usize> {
+    fn to_bytes(self) -> [u8; N];
+}
+
+impl IdToBytes<2> for StandardId {
+    fn to_bytes(self) -> [u8; 2] {
+        self.as_raw().to_le_bytes()
+    }
+}
+
+impl IdToBytes<4> for ExtendedId {
+    fn to_bytes(self) -> [u8; 4] {
+        self.as_raw().to_le_bytes()
+    }
+}
+
+fn id_to_bytes(id: Id) -> [u8; 4] {
+    match id {
+        Id::Standard(standard_id) => {
+            let bytes = standard_id.to_bytes();
+            [bytes[0], bytes[1], 0, 0]
+        }
+
+        Id::Extended(extended_id) => extended_id.to_bytes(),
     }
 }
 
