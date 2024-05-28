@@ -413,18 +413,18 @@ impl blocking::Can for Usb2Can {
 }
 
 enum ReceiverState {
+    EndOrHeader,
     Header,
     Type,
     Id { bytes_left: usize, frame: Frame },
     Data { byte_n: usize, frame: Frame },
     SkipRemote { bytes_left: usize, frame: Frame },
-    End(Frame),
     Finished(Frame),
 }
 
 impl ReceiverState {
     fn read_frame(read_byte: &mut impl FnMut() -> Result<u8>) -> Result<Frame> {
-        let mut state = Self::Header;
+        let mut state = Self::EndOrHeader;
 
         Ok(loop {
             state = state.advance(read_byte()?)?;
@@ -436,6 +436,15 @@ impl ReceiverState {
 
     fn advance(self, byte: u8) -> Result<Self> {
         let next_state = match (self, byte) {
+            (Self::EndOrHeader, PROTO_END) => Self::Header,
+            (Self::EndOrHeader, PROTO_HEADER) => Self::Type,
+            (Self::EndOrHeader, byte) => {
+                return Err(Error::RecvUnexpected(format!(
+                    "Expected end or header, received 0x{:02x} (!= {{0x{:02x}, 0x{:02x}}})",
+                    byte, PROTO_END, PROTO_HEADER
+                )))
+            }
+
             (Self::Header, PROTO_HEADER) => Self::Type,
             (Self::Header, byte) => {
                 return Err(Error::RecvUnexpected(format!(
@@ -517,7 +526,7 @@ impl ReceiverState {
 
                 if bytes_left == 0 {
                     if frame.dlc() == 0 {
-                        Self::End(frame)
+                        Self::Finished(frame)
                     } else if frame.is_remote_frame() {
                         Self::SkipRemote {
                             bytes_left: frame.dlc(),
@@ -546,7 +555,7 @@ impl ReceiverState {
 
                     byte_n += 1;
                     if byte_n == data.len() {
-                        Self::End(frame)
+                        Self::Finished(frame)
                     } else {
                         Self::Data { byte_n, frame }
                     }
@@ -566,18 +575,10 @@ impl ReceiverState {
             ) => {
                 bytes_left -= 1;
                 if bytes_left == 0 {
-                    Self::End(frame)
+                    Self::Finished(frame)
                 } else {
                     Self::SkipRemote { bytes_left, frame }
                 }
-            }
-
-            (Self::End(frame), PROTO_END) => Self::Finished(frame),
-            (Self::End(_), byte) => {
-                return Err(Error::RecvUnexpected(format!(
-                    "Expected end, received 0x{:02x} (!= 0x{:02x})",
-                    byte, PROTO_END
-                )))
             }
 
             (Self::Finished(_), _) => {
@@ -1015,8 +1016,12 @@ mod tests {
     fn check_serialize_deserialize_frame(frame: &Frame) {
         let message = frame.to_message();
         let mut reader_fn = into_reader_fn(message);
+
         let received_frame = ReceiverState::read_frame(&mut reader_fn).unwrap();
+
+        assert_eq!(reader_fn().unwrap(), PROTO_END);
         assert!(reader_fn().is_err());
+
         assert_eq!(frame, &received_frame);
     }
 
