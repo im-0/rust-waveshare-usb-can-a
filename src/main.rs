@@ -24,6 +24,7 @@
 #![warn(clippy::checked_conversions)]
 #![warn(clippy::type_repetition_in_bounds)]
 
+use std::io::stderr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -42,7 +43,7 @@ mod cli;
 fn main() -> Result<()> {
     // Configure logging.
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().with_writer(stderr))
         .with(
             EnvFilter::builder()
                 .with_default_directive(LevelFilter::INFO.into())
