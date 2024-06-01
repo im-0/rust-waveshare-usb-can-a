@@ -24,6 +24,7 @@
 #![warn(clippy::checked_conversions)]
 #![warn(clippy::type_repetition_in_bounds)]
 
+use std::collections::HashSet;
 use std::io::stderr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -36,7 +37,7 @@ use tracing::{error, info};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
-use waveshare_usb_can_a::{CanBaudRate, Frame, Usb2Can};
+use waveshare_usb_can_a::{CanBaudRate, Frame, Usb2Can, EXTENDED_ID_EXTRA_BITS};
 
 mod cli;
 
@@ -75,12 +76,58 @@ fn run_dump(args: &cli::Cli, options: &cli::DumpOptions) -> Result<()> {
 
     let mut usb2can = usb2can.open().context("Failed to open USB2CAN device")?;
 
+    // Prepare mask.
+    let mask = options.unique.as_ref().map(get_hashable_id_and_data);
+
     // Dump traffic on CAN bus.
+    let mut already_seen = HashSet::new();
     loop {
-        if let Err(error) = receive(&mut usb2can) {
-            error!("{:?}", error);
+        match (receive(&mut usb2can), mask) {
+            (Ok(_), None) => {
+                // receive() already prints the frame.
+            }
+
+            (Ok(frame), Some((id_mask, data_mask))) => {
+                let (mut id, mut data) = get_hashable_id_and_data(&frame);
+                id &= id_mask;
+                data.iter_mut()
+                    .zip(data_mask.iter())
+                    .for_each(|(data, mask)| {
+                        *data &= mask;
+                    });
+
+                if already_seen.insert((id, data)) {
+                    // Additionally print the frame as INFO log entry if it is unique.
+                    info!("-> {}", frame);
+                }
+            }
+
+            (Err(error), _) => {
+                error!("{:?}", error)
+            }
         }
     }
+}
+
+fn get_hashable_id_and_data(frame: &Frame) -> (u32, [u8; 8]) {
+    let id = match frame.id() {
+        Id::Standard(id) => (id.as_raw() as u32) << EXTENDED_ID_EXTRA_BITS,
+        Id::Extended(id) => id.as_raw(),
+    };
+
+    #[allow(clippy::get_first)]
+    let data = [
+        frame.data().get(0).copied().unwrap_or(0),
+        frame.data().get(1).copied().unwrap_or(0),
+        frame.data().get(2).copied().unwrap_or(0),
+        frame.data().get(3).copied().unwrap_or(0),
+        frame.data().get(4).copied().unwrap_or(0),
+        frame.data().get(5).copied().unwrap_or(0),
+        frame.data().get(6).copied().unwrap_or(0),
+        frame.data().get(7).copied().unwrap_or(0),
+    ];
+
+    (id, data)
 }
 
 fn run_inject(args: &cli::Cli, options: &cli::InjectOptions) -> Result<()> {

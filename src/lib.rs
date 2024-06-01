@@ -46,6 +46,12 @@ use tracing::{debug, trace};
 pub const DEFAULT_SERIAL_BAUD_RATE: u32 = 2000000;
 pub const DEFAULT_SERIAL_RECEIVE_TIMEOUT: Duration = Duration::from_millis(1000);
 
+pub const MAX_DATA_LENGTH: usize = 8;
+
+pub const BASE_ID_BITS: usize = 11;
+pub const EXTENDED_ID_BITS: usize = 29;
+pub const EXTENDED_ID_EXTRA_BITS: usize = EXTENDED_ID_BITS - BASE_ID_BITS;
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Configuration error: {0}")]
@@ -468,10 +474,10 @@ impl ReceiverState {
                 };
 
                 let data_len = (byte & PROTO_TYPE_SIZE_MASK) as usize;
-                if data_len > 8 {
+                if data_len > MAX_DATA_LENGTH {
                     return Err(Error::RecvUnexpected(format!(
-                        "Expected type, received 0x{:02x} (data length > 8)",
-                        byte
+                        "Expected type, received 0x{:02x} (data length > {})",
+                        byte, MAX_DATA_LENGTH
                     )));
                 }
 
@@ -646,7 +652,7 @@ impl Frame {
 
 impl embedded_can::Frame for Frame {
     fn new(id: impl Into<Id>, data: &[u8]) -> Option<Self> {
-        if data.len() > 8 {
+        if data.len() > MAX_DATA_LENGTH {
             None
         } else {
             Some(Self {
@@ -657,7 +663,7 @@ impl embedded_can::Frame for Frame {
     }
 
     fn new_remote(id: impl Into<Id>, dlc: usize) -> Option<Self> {
-        if dlc > 8 {
+        if dlc > MAX_DATA_LENGTH {
             None
         } else {
             Some(Self {
@@ -710,7 +716,7 @@ impl Display for Frame {
 
                 Id::Extended(extended_id) => (
                     extended_id.standard_id().as_raw(),
-                    Some(extended_id.as_raw() & ((1 << 18) - 1)), // Bits ID-17 to ID-0
+                    Some(extended_id.as_raw() & ((1 << EXTENDED_ID_EXTRA_BITS) - 1)), // Bits ID-17 to ID-0
                 ),
             }
         };
@@ -930,7 +936,7 @@ mod tests {
 
     #[test]
     fn standard_remote_frame_long() {
-        let frame = Frame::new_remote(StandardId::MAX, 8).unwrap();
+        let frame = Frame::new_remote(StandardId::MAX, MAX_DATA_LENGTH).unwrap();
         let message = frame.to_message();
         assert_eq!(
             message,
@@ -961,7 +967,7 @@ mod tests {
 
     #[test]
     fn extended_remote_frame_long() {
-        let frame = Frame::new_remote(ExtendedId::MAX, 8).unwrap();
+        let frame = Frame::new_remote(ExtendedId::MAX, MAX_DATA_LENGTH).unwrap();
         let message = frame.to_message();
         assert_eq!(
             message,
@@ -995,7 +1001,7 @@ mod tests {
 
     #[test]
     fn serde_frame_remote_standard() {
-        let frame = Frame::new_remote(StandardId::MAX, 8).unwrap();
+        let frame = Frame::new_remote(StandardId::MAX, MAX_DATA_LENGTH).unwrap();
         check_serialize_deserialize_frame(&frame);
 
         let frame = Frame::new_remote(StandardId::MAX, 0).unwrap();
@@ -1004,7 +1010,7 @@ mod tests {
 
     #[test]
     fn serde_frame_remote_extended() {
-        let frame = Frame::new_remote(ExtendedId::MAX, 8).unwrap();
+        let frame = Frame::new_remote(ExtendedId::MAX, MAX_DATA_LENGTH).unwrap();
         check_serialize_deserialize_frame(&frame);
 
         let frame = Frame::new_remote(ExtendedId::MAX, 0).unwrap();

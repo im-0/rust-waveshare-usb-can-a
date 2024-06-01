@@ -1,9 +1,9 @@
 use std::{str::FromStr, time::Duration};
 
-use anyhow::{anyhow, bail, ensure, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use clap::{Parser, Subcommand};
 use embedded_can::{ExtendedId, Frame as _, Id, StandardId};
-use waveshare_usb_can_a::{CanBaudRate, Frame};
+use waveshare_usb_can_a::{CanBaudRate, Frame, EXTENDED_ID_EXTRA_BITS};
 
 #[derive(Parser)]
 #[command(about, version)]
@@ -46,6 +46,18 @@ pub(crate) struct DumpOptions {
     /// There is no filtering by default.
     #[arg(short = 'f', long, value_name = "FILTER/MASK")]
     pub filter_with_mask: Option<FilterWithMask>,
+
+    /// Filter out already seen frames. By default, all frames are received and printed.
+    /// The mask is applied to the frame before checking if it has been seen.
+    ///
+    /// Example masks:
+    ///
+    ///     "7ff.3ffff:ffffffffffffffff" - Test full frame for uniqueness.
+    ///     "7ff.3ffff:ff" - Test ID and first data byte for uniqueness.
+    ///     "7ff.3ffff:00ff" - Test ID and second data byte for uniqueness.
+    ///     "7ff.3ffff:00" - Test only ID uniqueness.
+    #[arg(short = 'u', long, value_name = "MASK", value_parser = parse_data_frame, verbatim_doc_comment)]
+    pub unique: Option<Frame>,
 
     /// CAN bus baud rate.
     #[arg(value_name = "KBITS_PER_S")]
@@ -99,49 +111,71 @@ fn parse_duration_ms(duration: &str) -> Result<Duration> {
 }
 
 fn parse_frame(str_frame: &str) -> Result<Frame> {
-    let parts = str_frame.splitn(3, ':').collect::<Vec<_>>();
-    ensure!(parts.len() == 3, "Invalid frame format: \"{}\"", str_frame);
+    let parts = str_frame.splitn(2, ':').collect::<Vec<_>>();
+    ensure!(
+        parts.len() == 2,
+        "Invalid frame format, no type: \"{}\"",
+        str_frame
+    );
 
-    let remote = match parts[0].to_uppercase().as_str() {
-        "R" => true,
-        "D" => false,
-        _ => bail!("Invalid frame type: \"{}\"", str_frame),
+    match parts[0].to_uppercase().as_str() {
+        "R" => parse_remote_frame(parts[1]),
+        "D" => parse_data_frame(parts[1]),
+        _ => Err(anyhow!("Invalid frame type: \"{}\"", str_frame)),
+    }
+}
+
+fn parse_remote_frame(str_frame: &str) -> Result<Frame> {
+    let parts = str_frame.splitn(3, ':').collect::<Vec<_>>();
+    ensure!(
+        parts.len() == 2,
+        "Invalid frame format, no remote length: \"{}\"",
+        str_frame
+    );
+
+    let id = parse_id(parts[0])?;
+
+    let dlc = parts[1].parse::<usize>().with_context(|| {
+        format!(
+            "Unable to parse data length for remote frame: \"{}\"",
+            str_frame
+        )
+    })?;
+    Frame::new_remote(id, dlc)
+        .with_context(|| format!("Unable to create remote frame for \"{}\"", str_frame))
+}
+
+fn parse_data_frame(str_frame: &str) -> Result<Frame> {
+    let parts = str_frame.splitn(2, ':').collect::<Vec<_>>();
+    ensure!(
+        parts.len() == 2,
+        "Invalid frame format, no data: \"{}\"",
+        str_frame
+    );
+
+    let id = parse_id(parts[0])?;
+
+    let str_data = ensure_no_prefix(parts[1])
+        .ok_or_else(|| anyhow!("Data contains prefix: \"{}\"", str_frame))?;
+
+    let data = if str_data.is_empty() {
+        vec![]
+    } else {
+        let data = u64::from_str_radix(str_data, 16)
+            .with_context(|| format!("Invalid hex: \"{}\"", str_frame))?;
+
+        let data_len = str_data.len() / 2;
+        ensure!(
+            str_data.len() % 2 == 0,
+            "Odd number of hex digits: \"{}\"",
+            str_frame
+        );
+
+        data.to_be_bytes()[8 - data_len..].to_vec()
     };
 
-    let id = parse_id(parts[1])?;
-
-    if remote {
-        let dlc = parts[2].parse::<usize>().with_context(|| {
-            format!(
-                "Unable to parse data length for remote frame: \"{}\"",
-                str_frame
-            )
-        })?;
-        Frame::new_remote(id, dlc)
-            .with_context(|| format!("Unable to create remote frame for \"{}\"", str_frame))
-    } else {
-        let str_data = ensure_no_prefix(parts[2])
-            .ok_or_else(|| anyhow!("Data contains prefix: \"{}\"", str_frame))?;
-
-        let data = if str_data.is_empty() {
-            vec![]
-        } else {
-            let data = u64::from_str_radix(str_data, 16)
-                .with_context(|| format!("Invalid hex: \"{}\"", str_frame))?;
-
-            let data_len = str_data.len() / 2;
-            ensure!(
-                str_data.len() % 2 == 0,
-                "Odd number of hex digits: \"{}\"",
-                str_frame
-            );
-
-            data.to_be_bytes()[8 - data_len..].to_vec()
-        };
-
-        Frame::new(id, &data)
-            .with_context(|| format!("Unable to create data frame for \"{}\"", str_frame))
-    }
+    Frame::new(id, &data)
+        .with_context(|| format!("Unable to create data frame for \"{}\"", str_frame))
 }
 
 #[derive(Clone)]
@@ -180,7 +214,7 @@ fn parse_id(str_id: &str) -> Result<Id> {
     } else {
         let extended_id = u32::from_str_radix(parts[1], 16)
             .with_context(|| format!("Unable to parse extended ID \"{}\"", str_id))?;
-        let combined_id = (u32::from(standard_id) << 18) | extended_id;
+        let combined_id = (u32::from(standard_id) << EXTENDED_ID_EXTRA_BITS) | extended_id;
         ExtendedId::new(combined_id)
             .ok_or_else(|| anyhow!("Invalid extended ID"))?
             .into()
