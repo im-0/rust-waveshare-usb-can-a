@@ -86,12 +86,17 @@ pub(crate) struct InjectOptions {
 #[derive(Parser)]
 pub(crate) struct SelfTestOptions {
     /// Transmit test data frames onto the actual CAN bus in addition to the normal loopback test.
+    /// Frames are always sent onto the CAN bus if second adapter is provided.
     #[arg(short = 's', long)]
     pub send_frames: bool,
 
     /// Serial receive timeout.
     #[arg(short = 't', long, value_name = "MILLISECONDS", default_value = "1000", value_parser = parse_duration_ms)]
     pub receive_timeout: Duration,
+
+    /// Path to the serial device file for the second USB2CAN adapter.
+    /// If not provided, loopback mode of the only adapter is used for testing.
+    pub second_serial_path: Option<String>,
 }
 
 fn parse_duration_s(duration: &str) -> Result<Duration> {

@@ -157,7 +157,15 @@ fn run_inject(args: &cli::Cli, options: &cli::InjectOptions) -> Result<()> {
 
 fn run_self_test(args: &cli::Cli, options: &cli::SelfTestOptions) -> Result<()> {
     // Run tests with different settings.
-    info!("Starting loopback self-test for the Waveshare USB-CAN-A adapter...");
+    info!(
+        "Starting {}self-test for the Waveshare USB-CAN-A adapter...",
+        if options.second_serial_path.is_none() {
+            "loopback "
+        } else {
+            ""
+        }
+    );
+
     for can_baud_rate in [
         CanBaudRate::Kbitps5,
         CanBaudRate::Kbitps10,
@@ -206,45 +214,62 @@ fn run_self_test(args: &cli::Cli, options: &cli::SelfTestOptions) -> Result<()> 
                 };
 
                 // Open USB2CAN adapter.
-                let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, can_baud_rate)
+                let mut usb2can_a = waveshare_usb_can_a::new(&args.serial_path, can_baud_rate)
                     .filter(filter, mask)?
                     .serial_receive_timeout(options.receive_timeout)
-                    .loopback(true)
-                    .silent(!options.send_frames)
+                    .loopback(options.second_serial_path.is_none())
+                    .silent(options.second_serial_path.is_none() && !options.send_frames)
                     .automatic_retransmission(false)
                     .open()
                     .context("Failed to open USB2CAN device")?;
 
-                if filtering {
-                    let wrong_id: Id = if extended_frame {
-                        ExtendedId::ZERO.into()
-                    } else {
-                        StandardId::ZERO.into()
-                    };
+                if let Some(ref second_serial_path) = options.second_serial_path {
+                    let mut usb2can_b = waveshare_usb_can_a::new(second_serial_path, can_baud_rate)
+                        .filter(filter, mask)?
+                        .serial_receive_timeout(options.receive_timeout)
+                        .automatic_retransmission(false)
+                        .open()
+                        .context("Failed to open transmitting USB2CAN device")?;
 
-                    let wrong_frame = Frame::new(wrong_id, &[7, 6, 5, 4, 3, 2, 1, 0])
-                        .expect("Logic error: bad test frame");
-                    transmit(&mut usb2can, &wrong_frame)?;
-                }
+                    run_self_test_one_way(
+                        &mut usb2can_b,
+                        &mut usb2can_a,
+                        filtering,
+                        extended_frame,
+                    )?;
 
-                let id: Id = if extended_frame {
-                    ExtendedId::MAX.into()
+                    info!(
+                        "Running tests with baud rate {}, {} frames, {}, reverse...",
+                        can_baud_rate,
+                        if extended_frame {
+                            "extended"
+                        } else {
+                            "standard"
+                        },
+                        if filtering {
+                            "with filtering"
+                        } else {
+                            "without filtering"
+                        }
+                    );
+                    run_self_test_one_way(
+                        &mut usb2can_a,
+                        &mut usb2can_b,
+                        filtering,
+                        extended_frame,
+                    )?;
                 } else {
-                    StandardId::MAX.into()
+                    let mut usb2can_b = usb2can_a.try_clone().context(
+                        "Failed to clone USB2CAN device for separate transmitting handle",
+                    )?;
+
+                    run_self_test_one_way(
+                        &mut usb2can_b,
+                        &mut usb2can_a,
+                        filtering,
+                        extended_frame,
+                    )?;
                 };
-
-                let frame =
-                    Frame::new(id, &[0, 1, 2, 3, 4, 5, 6, 7]).expect("Logic error: bad test frame");
-                check_echo(&mut usb2can, &frame)?;
-
-                let frame = Frame::new(id, &[]).expect("Logic error: bad test frame");
-                check_echo(&mut usb2can, &frame)?;
-
-                let frame = Frame::new_remote(id, 0).expect("Logic error: bad test frame");
-                check_echo(&mut usb2can, &frame)?;
-
-                let frame = Frame::new_remote(id, 8).expect("Logic error: bad test frame");
-                check_echo(&mut usb2can, &frame)?;
             }
         }
     }
@@ -254,9 +279,46 @@ fn run_self_test(args: &cli::Cli, options: &cli::SelfTestOptions) -> Result<()> 
     Ok(())
 }
 
-fn check_echo(usb2can: &mut Usb2Can, frame: &Frame) -> Result<()> {
-    transmit(usb2can, frame)?;
-    let received = receive(usb2can)?;
+fn run_self_test_one_way(
+    usb2can_t: &mut Usb2Can,
+    usb2can_r: &mut Usb2Can,
+    filtering: bool,
+    extended_frame: bool,
+) -> Result<()> {
+    if filtering {
+        let wrong_id: Id = if extended_frame {
+            ExtendedId::ZERO.into()
+        } else {
+            StandardId::ZERO.into()
+        };
+
+        let wrong_frame =
+            Frame::new(wrong_id, &[7, 6, 5, 4, 3, 2, 1, 0]).expect("Logic error: bad test frame");
+        transmit(usb2can_t, &wrong_frame)?;
+    }
+
+    let id: Id = if extended_frame {
+        ExtendedId::MAX.into()
+    } else {
+        StandardId::MAX.into()
+    };
+
+    let frame = Frame::new(id, &[0, 1, 2, 3, 4, 5, 6, 7]).expect("Logic error: bad test frame");
+    check_echo(usb2can_t, usb2can_r, &frame)?;
+
+    let frame = Frame::new(id, &[]).expect("Logic error: bad test frame");
+    check_echo(usb2can_t, usb2can_r, &frame)?;
+
+    let frame = Frame::new_remote(id, 0).expect("Logic error: bad test frame");
+    check_echo(usb2can_t, usb2can_r, &frame)?;
+
+    let frame = Frame::new_remote(id, 8).expect("Logic error: bad test frame");
+    check_echo(usb2can_t, usb2can_r, &frame)
+}
+
+fn check_echo(usb2can_t: &mut Usb2Can, usb2can_r: &mut Usb2Can, frame: &Frame) -> Result<()> {
+    transmit(usb2can_t, frame)?;
+    let received = receive(usb2can_r)?;
 
     assert_eq!(frame, &received);
     Ok(())
