@@ -724,10 +724,10 @@ impl Display for Frame {
                 ),
             }
         };
-        write!(f, "{:03x}", base_id)?;
         if let Some(extended_id) = extended_id {
-            write!(f, ".{:05x}", extended_id)?;
+            write!(f, "{:05x}.", extended_id)?;
         }
+        write!(f, "{:03x}", base_id)?;
         write!(f, ":")?;
 
         // Data or remote length.

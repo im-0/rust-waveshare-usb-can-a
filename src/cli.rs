@@ -42,7 +42,7 @@ pub(crate) struct DumpOptions {
     #[arg(short = 'e', long)]
     pub receive_only_extended_frames: bool,
 
-    /// Filter and mask for ID filtering. Examples: "7ff/7ff" (standard ID), "7ff.3ffff/7ff.3ffff" (extended ID).
+    /// Filter and mask for ID filtering. Examples: "7ff/7ff" (standard ID), "3ffff.7ff/3ffff.7ff" (extended ID).
     /// There is no filtering by default.
     #[arg(short = 'f', long, value_name = "FILTER/MASK")]
     pub filter_with_mask: Option<FilterWithMask>,
@@ -52,10 +52,10 @@ pub(crate) struct DumpOptions {
     ///
     /// Example masks:
     ///
-    ///     "7ff.3ffff:ffffffffffffffff" - Test full frame for uniqueness.
-    ///     "7ff.3ffff:ff" - Test ID and first data byte for uniqueness.
-    ///     "7ff.3ffff:00ff" - Test ID and second data byte for uniqueness.
-    ///     "7ff.3ffff:00" - Test only ID uniqueness.
+    ///     "3ffff.7ff:ffffffffffffffff" - Test full frame for uniqueness.
+    ///     "3ffff.7ff:ff" - Test ID and first data byte for uniqueness.
+    ///     "3ffff.7ff:00ff" - Test ID and second data byte for uniqueness.
+    ///     "3ffff.7ff:00" - Test only ID uniqueness.
     #[arg(short = 'u', long, value_name = "MASK", value_parser = parse_data_frame, verbatim_doc_comment)]
     pub unique: Option<Frame>,
 
@@ -204,7 +204,7 @@ fn parse_id(str_id: &str) -> Result<Id> {
         .map(ensure_no_prefix)
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| anyhow!("Invalid ID format"))?;
-    let standard_id = u16::from_str_radix(parts[0], 16)
+    let standard_id = u16::from_str_radix(parts[parts.len() - 1], 16)
         .with_context(|| format!("Unable to parse standard ID \"{}\"", str_id))?;
 
     Ok(if parts.len() == 1 {
@@ -212,7 +212,7 @@ fn parse_id(str_id: &str) -> Result<Id> {
             .ok_or_else(|| anyhow!("Invalid standard ID"))?
             .into()
     } else {
-        let extended_id = u32::from_str_radix(parts[1], 16)
+        let extended_id = u32::from_str_radix(parts[0], 16)
             .with_context(|| format!("Unable to parse extended ID \"{}\"", str_id))?;
         let combined_id = (u32::from(standard_id) << EXTENDED_ID_EXTRA_BITS) | extended_id;
         ExtendedId::new(combined_id)
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn parse_data_frame_extended() {
         assert_eq!(
-            parse_frame("d:7ff.3ffff:0123456789abcdef").unwrap(),
+            parse_frame("d:3ffff.7ff:0123456789abcdef").unwrap(),
             Frame::new(
                 ExtendedId::MAX,
                 &[0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]
@@ -267,12 +267,12 @@ mod tests {
         );
 
         assert_eq!(
-            parse_frame("d:7ff.3ffff:01234567").unwrap(),
+            parse_frame("d:3ffff.7ff:01234567").unwrap(),
             Frame::new(ExtendedId::MAX, &[0x01, 0x23, 0x45, 0x67]).unwrap()
         );
 
         assert_eq!(
-            parse_frame("d:7ff.3ffff:").unwrap(),
+            parse_frame("d:3ffff.7ff:").unwrap(),
             Frame::new(ExtendedId::MAX, &[]).unwrap()
         );
     }
@@ -293,12 +293,12 @@ mod tests {
     #[test]
     fn parse_remote_frame_extended() {
         assert_eq!(
-            parse_frame("r:7ff.3ffff:8").unwrap(),
+            parse_frame("r:3ffff.7ff:8").unwrap(),
             Frame::new_remote(ExtendedId::MAX, 8).unwrap()
         );
 
         assert_eq!(
-            parse_frame("r:7ff.3ffff:0").unwrap(),
+            parse_frame("r:3ffff.7ff:0").unwrap(),
             Frame::new_remote(ExtendedId::MAX, 0).unwrap()
         );
     }
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn parse_id_extended() {
-        assert_eq!(parse_id("000.00000").unwrap(), ExtendedId::ZERO.into());
-        assert_eq!(parse_id("7ff.3ffff").unwrap(), ExtendedId::MAX.into());
+        assert_eq!(parse_id("00000.000").unwrap(), ExtendedId::ZERO.into());
+        assert_eq!(parse_id("3ffff.7ff").unwrap(), ExtendedId::MAX.into());
     }
 }
