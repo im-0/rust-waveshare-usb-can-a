@@ -24,8 +24,10 @@
 #![warn(clippy::checked_conversions)]
 #![warn(clippy::type_repetition_in_bounds)]
 
-// TODO: Implement more features from the original Windows app.
-// TODO: How serial baud rate works and why there is a "Reset" button?
+// TODO: Implement manual CAN bus baudrate selection (SJW, BS1, BS2, prescale).
+// TODO: Implement serial baud rate selection on the adapter.
+// TODO: Implement ID filtering configuration.
+// TODO: Implement configuration change on the fly.
 
 use core::panic;
 use std::{
