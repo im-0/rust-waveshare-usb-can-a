@@ -31,7 +31,7 @@ use core::panic;
 use std::{
     borrow::Cow,
     fmt::{self, Display},
-    io::{self, Read},
+    io::{self, BufReader, Read},
     result,
     str::FromStr,
     thread::sleep,
@@ -170,6 +170,8 @@ impl Usb2CanBuilder {
         let mut usb2can = Usb2Can {
             can_baud_rate: self.can_baud_rate,
             serial,
+            read_buffer: None,
+            tried_to_initialize_read_buffer: false,
         };
         usb2can.configure(&self)?;
         Ok(usb2can)
@@ -302,6 +304,8 @@ const PROTO_END: u8 = 0x55;
 pub struct Usb2Can {
     can_baud_rate: CanBaudRate,
     serial: Box<dyn SerialPort>,
+    read_buffer: Option<BufReader<Box<dyn SerialPort>>>,
+    tried_to_initialize_read_buffer: bool,
 }
 
 impl Usb2Can {
@@ -421,18 +425,34 @@ impl Usb2Can {
     }
 
     fn serial_read_byte(&mut self) -> Result<u8> {
-        // TODO: Buffered read.
+        if !self.tried_to_initialize_read_buffer {
+            self.read_buffer = self
+                .serial
+                .try_clone()
+                .map_err(|error| debug!("No read buffer, failed to clone serial port: {}", error))
+                .map(BufReader::new)
+                .ok();
+            self.tried_to_initialize_read_buffer = true;
+        }
+
         let mut byte = [0];
-        self.serial.read_exact(&mut byte)?;
+        if let Some(read_buffer) = &mut self.read_buffer {
+            read_buffer.read_exact(&mut byte)?;
+        } else {
+            self.serial.read_exact(&mut byte)?;
+        }
         trace!("Byte read from serial: {}", byte[0]);
         Ok(byte[0])
     }
 
     pub fn try_clone(&self) -> Result<Self> {
         let serial = self.serial.try_clone()?;
+
         Ok(Self {
             can_baud_rate: self.can_baud_rate,
             serial,
+            read_buffer: None,
+            tried_to_initialize_read_buffer: false,
         })
     }
 }
