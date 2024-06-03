@@ -167,7 +167,10 @@ impl Usb2CanBuilder {
         let serial = serial.open()?;
         debug!("Serial port opened: {:?}", serial.name());
 
-        let mut usb2can = Usb2Can { serial };
+        let mut usb2can = Usb2Can {
+            can_baud_rate: self.can_baud_rate,
+            serial,
+        };
         usb2can.configure(&self)?;
         Ok(usb2can)
     }
@@ -297,11 +300,42 @@ const PROTO_TYPE_SIZE_MASK: u8 = 0b00001111;
 const PROTO_END: u8 = 0x55;
 
 pub struct Usb2Can {
+    can_baud_rate: CanBaudRate,
     serial: Box<dyn SerialPort>,
 }
 
 impl Usb2Can {
     const CONFIGURATION_DELAY: Duration = Duration::from_millis(100);
+
+    pub fn name(&self) -> Option<String> {
+        self.serial.name()
+    }
+
+    pub fn serial_baud_rate(&self) -> Result<u32> {
+        self.serial.baud_rate().map_err(|error| {
+            Error::Configuration(format!("Failed to get serial baud rate: {}", error))
+        })
+    }
+
+    pub const fn can_baud_rate(&self) -> CanBaudRate {
+        self.can_baud_rate
+    }
+
+    pub fn serial_receive_timeout(&self) -> Duration {
+        self.serial.timeout()
+    }
+
+    pub fn set_serial_baud_rate(&mut self, baud_rate: u32) -> Result<()> {
+        self.serial.set_baud_rate(baud_rate).map_err(|error| {
+            Error::Configuration(format!("Failed to set serial baud rate: {}", error))
+        })
+    }
+
+    pub fn set_serial_receive_timeout(&mut self, timeout: Duration) -> Result<()> {
+        self.serial.set_timeout(timeout).map_err(|error| {
+            Error::Configuration(format!("Failed to set serial receive timeout: {}", error))
+        })
+    }
 
     fn configure(&mut self, configuration: &Usb2CanBuilder) -> Result<()> {
         let filter = id_to_bytes(configuration.filter);
@@ -396,7 +430,10 @@ impl Usb2Can {
 
     pub fn try_clone(&self) -> Result<Self> {
         let serial = self.serial.try_clone()?;
-        Ok(Self { serial })
+        Ok(Self {
+            can_baud_rate: self.can_baud_rate,
+            serial,
+        })
     }
 }
 
