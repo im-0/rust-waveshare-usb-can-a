@@ -118,9 +118,9 @@ fn parse_frame(str_frame: &str) -> Result<Frame> {
         str_frame
     );
 
-    match parts[0].to_uppercase().as_str() {
-        "R" => parse_remote_frame(parts[1]),
-        "D" => parse_data_frame(parts[1]),
+    match parts[0].to_lowercase().as_str() {
+        "r" => parse_remote_frame(parts[1]),
+        "d" => parse_data_frame(parts[1]),
         _ => Err(anyhow!("Invalid frame type: \"{}\"", str_frame)),
     }
 }
