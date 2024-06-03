@@ -172,6 +172,7 @@ impl Usb2CanBuilder {
             serial,
             read_buffer: None,
             tried_to_initialize_read_buffer: false,
+            sync_attempts_left: SYNC_ATTEMPTS,
         };
         usb2can.configure(&self)?;
         Ok(usb2can)
@@ -276,6 +277,11 @@ impl FromStr for CanBaudRate {
     }
 }
 
+const MAX_FIXED_MESSAGE_SIZE: usize = 20;
+const MAX_VARIABLE_MESSAGE_SIZE: usize = 15;
+// Should be enough to sync if leftovers of a single frame are left somewhere in the buffers.
+const SYNC_ATTEMPTS: usize = const_fn_max(MAX_FIXED_MESSAGE_SIZE, MAX_VARIABLE_MESSAGE_SIZE) - 1;
+
 const PROTO_HEADER: u8 = 0xaa;
 const PROTO_HEADER_FIXED: u8 = 0x55;
 
@@ -301,11 +307,16 @@ const PROTO_TYPE_SIZE_MASK: u8 = 0b00001111;
 
 const PROTO_END: u8 = 0x55;
 
+const fn const_fn_max(a: usize, b: usize) -> usize {
+    [a, b][(a < b) as usize]
+}
+
 pub struct Usb2Can {
     can_baud_rate: CanBaudRate,
     serial: Box<dyn SerialPort>,
     read_buffer: Option<BufReader<Box<dyn SerialPort>>>,
     tried_to_initialize_read_buffer: bool,
+    sync_attempts_left: usize,
 }
 
 impl Usb2Can {
@@ -345,7 +356,7 @@ impl Usb2Can {
         let filter = id_to_bytes(configuration.filter);
         let mask = id_to_bytes(configuration.mask);
 
-        let mut config_message: [u8; 20] = [
+        let mut config_message: [u8; MAX_FIXED_MESSAGE_SIZE] = [
             // Header
             PROTO_HEADER,
             PROTO_HEADER_FIXED,
@@ -402,8 +413,6 @@ impl Usb2Can {
         // Adapter needs some time to process the configuration change.
         sleep(Self::CONFIGURATION_DELAY);
 
-        // TODO: Receive all remaining data before returning.
-        // TODO: Check that configuration was successful by first using loopback mode?
         Ok(())
     }
 
@@ -445,6 +454,10 @@ impl Usb2Can {
         Ok(byte[0])
     }
 
+    fn receive_inner(&mut self) -> Result<Frame> {
+        ReceiverState::read_frame(&mut || self.serial_read_byte())
+    }
+
     pub fn try_clone(&self) -> Result<Self> {
         let serial = self.serial.try_clone()?;
 
@@ -453,6 +466,12 @@ impl Usb2Can {
             serial,
             read_buffer: None,
             tried_to_initialize_read_buffer: false,
+
+            sync_attempts_left: if self.sync_attempts_left == SYNC_ATTEMPTS {
+                SYNC_ATTEMPTS
+            } else {
+                0
+            },
         })
     }
 }
@@ -468,7 +487,28 @@ impl blocking::Can for Usb2Can {
     }
 
     fn receive(&mut self) -> Result<Self::Frame> {
-        ReceiverState::read_frame(&mut || self.serial_read_byte()).map(|frame| {
+        if self.sync_attempts_left == 0 {
+            self.receive_inner()
+        } else {
+            loop {
+                match self.receive_inner() {
+                    Ok(frame) => {
+                        self.sync_attempts_left = 0;
+                        break Ok(frame);
+                    }
+
+                    Err(error) => debug!("Failed to sync: {}", error),
+                }
+
+                if self.sync_attempts_left == 0 {
+                    break Err(Error::RecvUnexpected(
+                        "Failed to sync, no attempts left".into(),
+                    ));
+                }
+                self.sync_attempts_left -= 1;
+            }
+        }
+        .map(|frame| {
             trace!("Received frame: {:?}", frame);
             frame
         })
@@ -666,12 +706,10 @@ enum FrameData {
 }
 
 impl Frame {
-    const MAX_SEND_MESSAGE_SIZE: usize = 15;
-
     fn to_message(&self) -> Vec<u8> {
         // TODO: Support fixed length encoding.
 
-        let mut message = Vec::with_capacity(Self::MAX_SEND_MESSAGE_SIZE);
+        let mut message = Vec::with_capacity(MAX_VARIABLE_MESSAGE_SIZE);
 
         // Header
         message.push(PROTO_HEADER);
@@ -870,7 +908,7 @@ mod tests {
         // Smallest message.
         let frame = Frame::new_remote(StandardId::MAX, 0).unwrap();
         let message = frame.to_message();
-        assert!(message.len() < Frame::MAX_SEND_MESSAGE_SIZE);
+        assert!(message.len() < MAX_VARIABLE_MESSAGE_SIZE);
     }
 
     #[test]
@@ -878,7 +916,7 @@ mod tests {
         // Largest message.
         let frame = Frame::new(ExtendedId::MAX, &[0, 0, 0, 0, 0, 0, 0, 0]).unwrap();
         let message = frame.to_message();
-        assert_eq!(message.len(), Frame::MAX_SEND_MESSAGE_SIZE);
+        assert_eq!(message.len(), MAX_VARIABLE_MESSAGE_SIZE);
     }
 
     #[test]
