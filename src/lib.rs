@@ -702,11 +702,15 @@ impl embedded_can::Frame for Frame {
 
 impl Display for Frame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_standard() {
+            write!(f, "      ")?;
+        }
+
         // Type and data length.
         if self.is_remote_frame() {
-            write!(f, "REMOTE {} ", self.dlc())?;
+            write!(f, "r:")?;
         } else {
-            write!(f, "  DATA {} ", self.dlc())?;
+            write!(f, "d:")?;
         }
 
         // Identifier.
@@ -722,24 +726,25 @@ impl Display for Frame {
         };
         write!(f, "{:03x}", base_id)?;
         if let Some(extended_id) = extended_id {
-            write!(f, ".{:05x} ", extended_id)?;
-        } else {
-            write!(f, "       ")?;
+            write!(f, ".{:05x}", extended_id)?;
         }
+        write!(f, ":")?;
 
-        // Data.
+        // Data or remote length.
         if self.is_remote_frame() {
-            write!(f, "                                ")?;
+            write!(f, "{}", self.dlc())?;
+            write!(f, "                        ")?;
         } else {
             // Print as hex.
             for byte in self.data() {
-                write!(f, "{:02x} ", byte)?;
+                write!(f, "{:02x}", byte)?;
             }
             for _ in self.dlc()..8 {
-                write!(f, "__ ")?;
+                write!(f, "  ")?;
             }
 
             // Print printable characters as ASCII.
+            write!(f, " ")?;
             for byte in self.data() {
                 let char = char::from_u32(*byte as u32).map_or('.', |char| {
                     if char.is_ascii_graphic() {
