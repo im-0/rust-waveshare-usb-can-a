@@ -25,7 +25,6 @@
 #![warn(clippy::type_repetition_in_bounds)]
 
 // TODO: Implement manual CAN bus baudrate selection (SJW, BS1, BS2, prescale).
-// TODO: Implement serial baud rate selection on the adapter.
 // TODO: Implement ID filtering configuration.
 // TODO: Implement configuration change on the fly.
 
@@ -44,7 +43,7 @@ use serialport::{ClearBuffer, DataBits, SerialPort, StopBits};
 use thiserror::Error;
 use tracing::{debug, trace};
 
-pub const DEFAULT_SERIAL_BAUD_RATE: u32 = 2000000;
+pub const DEFAULT_SERIAL_BAUD_RATE: SerialBaudRate = SerialBaudRate::R2000000Bd;
 pub const DEFAULT_SERIAL_RECEIVE_TIMEOUT: Duration = Duration::from_millis(1000);
 
 pub const MAX_DATA_LENGTH: usize = 8;
@@ -60,6 +59,9 @@ pub enum Error {
 
     #[error("Serial port error: {}", .0.description)]
     Serial(#[from] serialport::Error),
+
+    #[error("Serial read timed out")]
+    SerialReadTimedOut,
 
     #[error("Serial IO error: {0}")]
     SerialIO(#[from] io::Error),
@@ -83,7 +85,7 @@ pub type Result<T> = result::Result<T, Error>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Usb2CanBuilder {
     path: String,
-    serial_baud_rate: u32,
+    serial_baud_rate: SerialBaudRate,
     serial_receive_timeout: Duration,
     can_baud_rate: CanBaudRate,
     receive_only_extended_frames: bool,
@@ -102,7 +104,7 @@ impl Usb2CanBuilder {
     }
 
     #[must_use]
-    pub const fn serial_baud_rate(mut self, serial_baud_rate: u32) -> Self {
+    pub const fn serial_baud_rate(mut self, serial_baud_rate: SerialBaudRate) -> Self {
         self.serial_baud_rate = serial_baud_rate;
         self
     }
@@ -161,7 +163,7 @@ impl Usb2CanBuilder {
     pub fn open(self) -> Result<Usb2Can> {
         debug!("Opening USB2CAN with configuration {:?}", self);
 
-        let serial = serialport::new(&self.path, self.serial_baud_rate)
+        let serial = serialport::new(&self.path, u32::from(self.serial_baud_rate))
             .data_bits(DataBits::Eight)
             .stop_bits(StopBits::Two)
             .timeout(self.serial_receive_timeout);
@@ -192,6 +194,82 @@ pub fn new<'a>(path: impl Into<Cow<'a, str>>, can_baud_rate: CanBaudRate) -> Usb
         loopback: false,
         silent: false,
         automatic_retransmission: true,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SerialBaudRate {
+    R9600Bd,
+    R19200Bd,
+    R38400Bd,
+    R115200Bd,
+    R1228800Bd,
+    R2000000Bd,
+}
+
+impl SerialBaudRate {
+    const BLINK_DELAY: Duration = Duration::from_millis(700);
+
+    const fn to_config_value(self) -> u8 {
+        match self {
+            Self::R9600Bd => 0x05,
+            Self::R19200Bd => 0x04,
+            Self::R38400Bd => 0x03,
+            Self::R115200Bd => 0x02,
+            Self::R1228800Bd => 0x01,
+            Self::R2000000Bd => 0x00,
+        }
+    }
+
+    fn to_blink_delay(self) -> Duration {
+        let blinks = match self {
+            Self::R9600Bd => 6,
+            Self::R19200Bd => 5,
+            Self::R38400Bd => 4,
+            Self::R115200Bd => 3,
+            Self::R1228800Bd => 2,
+            Self::R2000000Bd => 1,
+        };
+
+        Self::BLINK_DELAY * blinks
+    }
+}
+
+impl Display for SerialBaudRate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} Bd", u32::from(*self))
+    }
+}
+
+impl TryFrom<u32> for SerialBaudRate {
+    type Error = Error;
+
+    fn try_from(value: u32) -> result::Result<Self, Self::Error> {
+        match value {
+            9_600 => Ok(Self::R9600Bd),
+            19_200 => Ok(Self::R19200Bd),
+            38_400 => Ok(Self::R38400Bd),
+            115_200 => Ok(Self::R115200Bd),
+            1_228_800 => Ok(Self::R1228800Bd),
+            2_000_000 => Ok(Self::R2000000Bd),
+            _ => Err(Error::Configuration(format!(
+                "Unsupported serial baud rate value: {}",
+                value
+            ))),
+        }
+    }
+}
+
+impl From<SerialBaudRate> for u32 {
+    fn from(value: SerialBaudRate) -> Self {
+        match value {
+            SerialBaudRate::R9600Bd => 9_600,
+            SerialBaudRate::R19200Bd => 19_200,
+            SerialBaudRate::R38400Bd => 38_400,
+            SerialBaudRate::R115200Bd => 115_200,
+            SerialBaudRate::R1228800Bd => 1_228_800,
+            SerialBaudRate::R2000000Bd => 2_000_000,
+        }
     }
 }
 
@@ -304,6 +382,7 @@ const PROTO_HEADER_FIXED: u8 = 0x55;
 
 const PROTO_TYPE_CFG_SET: u8 = 0b00000010;
 const PROTO_TYPE_CFG_SET_VARIABLE: u8 = 0b00010000;
+const PROTO_TYPE_CFG_SET_SERIAL_BAUD_RATE: u8 = 0b00000100;
 
 const PROTO_CFG_MODE_FLAG_LOOPBACK: u8 = 0b00000001;
 const PROTO_CFG_MODE_FLAG_SILENT: u8 = 0b00000010;
@@ -343,24 +422,12 @@ impl Usb2Can {
         self.serial.name()
     }
 
-    pub fn serial_baud_rate(&self) -> Result<u32> {
-        self.serial.baud_rate().map_err(|error| {
-            Error::Configuration(format!("Failed to get serial baud rate: {}", error))
-        })
-    }
-
     pub const fn can_baud_rate(&self) -> CanBaudRate {
         self.can_baud_rate
     }
 
     pub fn serial_receive_timeout(&self) -> Duration {
         self.serial.timeout()
-    }
-
-    pub fn set_serial_baud_rate(&mut self, baud_rate: u32) -> Result<()> {
-        self.serial.set_baud_rate(baud_rate).map_err(|error| {
-            Error::Configuration(format!("Failed to set serial baud rate: {}", error))
-        })
     }
 
     pub fn set_serial_receive_timeout(&mut self, timeout: Duration) -> Result<()> {
@@ -422,12 +489,85 @@ impl Usb2Can {
             // Checksum (will be filled in later)
             0x00,
         ];
-        Self::fill_checksum(&mut config_message);
+        self.fill_checksum_and_transmit_configuration_message(&mut config_message)
+    }
+
+    pub fn serial_baud_rate(&self) -> Result<SerialBaudRate> {
+        self.serial
+            .baud_rate()
+            .map_err(|error| {
+                Error::Configuration(format!("Failed to get serial baud rate: {}", error))
+            })
+            .and_then(|value| {
+                SerialBaudRate::try_from(value).map_err(|error| {
+                    Error::Configuration(format!(
+                        "Unsupported baud rate on underlying serial interface: {}",
+                        error
+                    ))
+                })
+            })
+    }
+
+    pub fn set_serial_baud_rate(&mut self, serial_baud_rate: SerialBaudRate) -> Result<()> {
+        let mut config_message: [u8; MAX_FIXED_MESSAGE_SIZE] = [
+            // Header
+            PROTO_HEADER,
+            PROTO_HEADER_FIXED,
+            // Set serial baud rate
+            PROTO_TYPE_CFG_SET | PROTO_TYPE_CFG_SET_SERIAL_BAUD_RATE,
+            // Serial baud rate
+            serial_baud_rate.to_config_value(),
+            // Reserved
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            // Checksum (will be filled in later)
+            0x00,
+        ];
+        self.fill_checksum_and_transmit_configuration_message(&mut config_message)?;
+
+        // Adapater does not respond while blinking.
+        let blink_delay = serial_baud_rate.to_blink_delay();
+        debug!(
+            "Waiting {}s while adapter is blinking",
+            blink_delay.as_secs_f64()
+        );
+        sleep(blink_delay);
+
+        // Set the new baud rate on underlying serial interface.
+        self.serial
+            .set_baud_rate(u32::from(serial_baud_rate))
+            .map_err(|error| {
+                Error::Configuration(format!("Failed to set serial baud rate: {}", error))
+            })
+    }
+
+    fn fill_checksum_and_transmit_configuration_message(
+        &mut self,
+        config_message: &mut [u8],
+    ) -> Result<()> {
+        Self::fill_checksum(config_message);
 
         self.serial.clear(ClearBuffer::All)?;
-        self.serial_write(&config_message)?;
+        self.serial_write(config_message)?;
 
         // Adapter needs some time to process the configuration change.
+        debug!(
+            "Waiting {}s for configuration change to take effect",
+            Self::CONFIGURATION_DELAY.as_secs_f64()
+        );
         sleep(Self::CONFIGURATION_DELAY);
 
         Ok(())
@@ -463,10 +603,18 @@ impl Usb2Can {
 
         let mut byte = [0];
         if let Some(read_buffer) = &mut self.read_buffer {
-            read_buffer.read_exact(&mut byte)?;
+            read_buffer.read_exact(&mut byte)
         } else {
-            self.serial.read_exact(&mut byte)?;
+            self.serial.read_exact(&mut byte)
         }
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::TimedOut {
+                Error::SerialReadTimedOut
+            } else {
+                Error::from(error)
+            }
+        })?;
+
         trace!("Byte read from serial: {}", byte[0]);
         Ok(byte[0])
     }
@@ -514,6 +662,7 @@ impl blocking::Can for Usb2Can {
                         break Ok(frame);
                     }
 
+                    error @ Err(Error::SerialReadTimedOut) => break error,
                     Err(error) => debug!("Failed to sync: {}", error),
                 }
 

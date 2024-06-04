@@ -3,7 +3,7 @@ use std::{str::FromStr, time::Duration};
 use anyhow::{anyhow, ensure, Context, Error, Result};
 use clap::{Parser, Subcommand};
 use embedded_can::{ExtendedId, Frame as _, Id, StandardId};
-use waveshare_usb_can_a::{CanBaudRate, Frame, EXTENDED_ID_EXTRA_BITS};
+use waveshare_usb_can_a::{CanBaudRate, Frame, SerialBaudRate, EXTENDED_ID_EXTRA_BITS};
 
 #[derive(Parser)]
 #[command(about, version)]
@@ -25,6 +25,15 @@ pub(crate) enum SubCommand {
     /// Inject frames into CAN bus.
     #[command()]
     Inject(InjectOptions),
+
+    /// Configure serial baud rate. Serial baud rate persists when adapter is powered off
+    /// and can be reset to the default 2000000 Bd by pressing the button during power on.
+    #[command()]
+    SetSerialBaudRate(SetSerialBaudRateOptions),
+
+    /// Try to reset the adapter to factory defaults. This sets the serial baud rate to 2000000 Bd.
+    #[command()]
+    ResetToFactoryDefaults,
 
     /// Run self-test.
     #[command()]
@@ -59,6 +68,10 @@ pub(crate) struct DumpOptions {
     #[arg(short = 'u', long, value_name = "MASK", value_parser = parse_data_frame, verbatim_doc_comment)]
     pub unique: Option<Frame>,
 
+    /// Serial baud rate. Supported values: 9600, 19200, 38400, 115200, 1228800, 2000000.
+    #[arg(short = 'b', long, value_name = "BAUD_RATE", default_value = "2000000", value_parser = parse_serial_baud_rate)]
+    pub serial_baud_rate: SerialBaudRate,
+
     /// CAN bus baud rate. Supported values: 5000, 10000, 20000, 50000, 100000, 125000, 200000,
     /// 250000, 400000, 500000, 800000, 1000000.
     #[arg(value_name = "BAUD_RATE", value_parser = parse_can_baud_rate)]
@@ -75,6 +88,10 @@ pub(crate) struct InjectOptions {
     #[arg(short = 'l', long, value_name = "MILLISECONDS", value_parser = parse_duration_ms)]
     pub loop_inject: Option<Duration>,
 
+    /// Serial baud rate. Supported values: 9600, 19200, 38400, 115200, 1228800, 2000000.
+    #[arg(short = 'b', long, value_name = "BAUD_RATE", default_value = "2000000", value_parser = parse_serial_baud_rate)]
+    pub serial_baud_rate: SerialBaudRate,
+
     /// CAN bus baud rate. Supported values: 5000, 10000, 20000, 50000, 100000, 125000, 200000,
     /// 250000, 400000, 500000, 800000, 1000000.
     #[arg(value_name = "BAUD_RATE", value_parser = parse_can_baud_rate)]
@@ -83,6 +100,17 @@ pub(crate) struct InjectOptions {
     /// Frames to inject.
     #[arg(value_name = "FRAME", required = true, value_parser = parse_frame)]
     pub frames: Vec<Frame>,
+}
+
+#[derive(Parser)]
+pub(crate) struct SetSerialBaudRateOptions {
+    /// Old serial baud rate. Supported values: 9600, 19200, 38400, 115200, 1228800, 2000000.
+    #[arg(short = 'b', long, value_name = "OLD_BAUD_RATE", default_value = "2000000", value_parser = parse_serial_baud_rate)]
+    pub old_serial_baud_rate: SerialBaudRate,
+
+    /// Old serial baud rate. Supported values: 9600, 19200, 38400, 115200, 1228800, 2000000.
+    #[arg(value_name = "NEW_BAUD_RATE", default_value = "2000000", value_parser = parse_serial_baud_rate)]
+    pub new_serial_baud_rate: SerialBaudRate,
 }
 
 #[derive(Parser)]
@@ -183,6 +211,13 @@ fn parse_data_frame(str_frame: &str) -> Result<Frame> {
 
     Frame::new(id, &data)
         .with_context(|| format!("Unable to create data frame for \"{}\"", str_frame))
+}
+
+fn parse_serial_baud_rate(str_rate: &str) -> Result<SerialBaudRate> {
+    str_rate
+        .parse::<u32>()
+        .with_context(|| format!("Invalid serial rate string: \"{}\"", str_rate))
+        .and_then(|value| SerialBaudRate::try_from(value).map_err(Error::from))
 }
 
 fn parse_can_baud_rate(str_rate: &str) -> Result<CanBaudRate> {
