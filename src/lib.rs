@@ -27,6 +27,7 @@
 // TODO: Implement manual CAN bus baudrate selection (SJW, BS1, BS2, prescale).
 // TODO: Implement ID filtering configuration.
 // TODO: Implement configuration change on the fly.
+// TODO: Throttle transmitting to the CAN baud rate.
 
 use core::panic;
 use std::{
