@@ -167,18 +167,18 @@ fn run_self_test(args: &cli::Cli, options: &cli::SelfTestOptions) -> Result<()> 
     );
 
     for can_baud_rate in [
-        CanBaudRate::Kbitps5,
-        CanBaudRate::Kbitps10,
-        CanBaudRate::Kbitps20,
-        CanBaudRate::Kbitps50,
-        CanBaudRate::Kbitps100,
-        CanBaudRate::Kbitps125,
-        CanBaudRate::Kbitps200,
-        CanBaudRate::Kbitps250,
-        CanBaudRate::Kbitps400,
-        CanBaudRate::Kbitps500,
-        CanBaudRate::Kbitps800,
-        CanBaudRate::Kbitps1000,
+        CanBaudRate::R5kBd,
+        CanBaudRate::R10kBd,
+        CanBaudRate::R20kBd,
+        CanBaudRate::R50kBd,
+        CanBaudRate::R100kBd,
+        CanBaudRate::R125kBd,
+        CanBaudRate::R200kBd,
+        CanBaudRate::R250kBd,
+        CanBaudRate::R400kBd,
+        CanBaudRate::R500kBd,
+        CanBaudRate::R800kBd,
+        CanBaudRate::R1000kBd,
     ] {
         for extended_frame in [false, true] {
             for filtering in [false, true] {

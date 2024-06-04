@@ -35,7 +35,6 @@ use std::{
     fmt::{self, Display},
     io::{self, BufReader, Read},
     result,
-    str::FromStr,
     thread::sleep,
     time::Duration,
 };
@@ -198,83 +197,99 @@ pub fn new<'a>(path: impl Into<Cow<'a, str>>, can_baud_rate: CanBaudRate) -> Usb
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CanBaudRate {
-    Kbitps5,
-    Kbitps10,
-    Kbitps20,
-    Kbitps50,
-    Kbitps100,
-    Kbitps125,
-    Kbitps200,
-    Kbitps250,
-    Kbitps400,
-    Kbitps500,
-    Kbitps800,
-    Kbitps1000,
+    R5kBd,
+    R10kBd,
+    R20kBd,
+    R50kBd,
+    R100kBd,
+    R125kBd,
+    R200kBd,
+    R250kBd,
+    R400kBd,
+    R500kBd,
+    R800kBd,
+    R1000kBd,
 }
 
 impl CanBaudRate {
-    pub const fn to_baud_rate(&self) -> u32 {
-        match self {
-            Self::Kbitps5 => 5_000,
-            Self::Kbitps10 => 10_000,
-            Self::Kbitps20 => 20_000,
-            Self::Kbitps50 => 50_000,
-            Self::Kbitps100 => 100_000,
-            Self::Kbitps125 => 125_000,
-            Self::Kbitps200 => 200_000,
-            Self::Kbitps250 => 250_000,
-            Self::Kbitps400 => 400_000,
-            Self::Kbitps500 => 500_000,
-            Self::Kbitps800 => 800_000,
-            Self::Kbitps1000 => 1_000_000,
-        }
-    }
-
     const fn to_config_value(self) -> u8 {
         match self {
-            Self::Kbitps5 => 0x0c,
-            Self::Kbitps10 => 0x0b,
-            Self::Kbitps20 => 0x0a,
-            Self::Kbitps50 => 0x09,
-            Self::Kbitps100 => 0x08,
-            Self::Kbitps125 => 0x07,
-            Self::Kbitps200 => 0x06,
-            Self::Kbitps250 => 0x05,
-            Self::Kbitps400 => 0x04,
-            Self::Kbitps500 => 0x03,
-            Self::Kbitps800 => 0x02,
-            Self::Kbitps1000 => 0x01,
+            Self::R5kBd => 0x0c,
+            Self::R10kBd => 0x0b,
+            Self::R20kBd => 0x0a,
+            Self::R50kBd => 0x09,
+            Self::R100kBd => 0x08,
+            Self::R125kBd => 0x07,
+            Self::R200kBd => 0x06,
+            Self::R250kBd => 0x05,
+            Self::R400kBd => 0x04,
+            Self::R500kBd => 0x03,
+            Self::R800kBd => 0x02,
+            Self::R1000kBd => 0x01,
         }
     }
 }
 
 impl Display for CanBaudRate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} bits/s", self.to_baud_rate())
+        match self {
+            Self::R5kBd
+            | Self::R10kBd
+            | Self::R20kBd
+            | Self::R50kBd
+            | Self::R100kBd
+            | Self::R125kBd
+            | Self::R200kBd
+            | Self::R250kBd
+            | Self::R400kBd
+            | Self::R500kBd
+            | Self::R800kBd => write!(f, "{} kBd", u32::from(*self) / 1000),
+
+            Self::R1000kBd => write!(f, "1 MBd"),
+        }
     }
 }
 
-impl FromStr for CanBaudRate {
-    type Err = Error;
+impl TryFrom<u32> for CanBaudRate {
+    type Error = Error;
 
-    fn from_str(s: &str) -> result::Result<Self, Self::Err> {
-        match s {
-            "5" => Ok(Self::Kbitps5),
-            "10" => Ok(Self::Kbitps10),
-            "20" => Ok(Self::Kbitps20),
-            "50" => Ok(Self::Kbitps50),
-            "100" => Ok(Self::Kbitps100),
-            "125" => Ok(Self::Kbitps125),
-            "200" => Ok(Self::Kbitps200),
-            "250" => Ok(Self::Kbitps250),
-            "400" => Ok(Self::Kbitps400),
-            "500" => Ok(Self::Kbitps500),
-            "800" => Ok(Self::Kbitps800),
-            "1000" => Ok(Self::Kbitps1000),
+    fn try_from(value: u32) -> result::Result<Self, Self::Error> {
+        match value {
+            5_000 => Ok(Self::R5kBd),
+            10_000 => Ok(Self::R10kBd),
+            20_000 => Ok(Self::R20kBd),
+            50_000 => Ok(Self::R50kBd),
+            100_000 => Ok(Self::R100kBd),
+            125_000 => Ok(Self::R125kBd),
+            200_000 => Ok(Self::R200kBd),
+            250_000 => Ok(Self::R250kBd),
+            400_000 => Ok(Self::R400kBd),
+            500_000 => Ok(Self::R500kBd),
+            800_000 => Ok(Self::R800kBd),
+            1_000_000 => Ok(Self::R1000kBd),
             _ => Err(Error::Configuration(format!(
-                "Invalid CAN baud rate: {}",
-                s
+                "Unsupported CAN baud rate value: {}",
+                value
             ))),
+        }
+    }
+}
+
+impl From<CanBaudRate> for u32 {
+    fn from(value: CanBaudRate) -> Self {
+        match value {
+            CanBaudRate::R5kBd => 5_000,
+            CanBaudRate::R10kBd => 10_000,
+            CanBaudRate::R20kBd => 20_000,
+            CanBaudRate::R50kBd => 50_000,
+            CanBaudRate::R100kBd => 100_000,
+            CanBaudRate::R125kBd => 125_000,
+            CanBaudRate::R200kBd => 200_000,
+            CanBaudRate::R250kBd => 250_000,
+            CanBaudRate::R400kBd => 400_000,
+            CanBaudRate::R500kBd => 500_000,
+            CanBaudRate::R800kBd => 800_000,
+            CanBaudRate::R1000kBd => 1_000_000,
         }
     }
 }
@@ -896,11 +911,11 @@ mod tests {
 
     #[test]
     fn invalid_filter_conf() {
-        let builder = new("/dev/ttyUSB123", CanBaudRate::Kbitps1000);
+        let builder = new("/dev/ttyUSB123", CanBaudRate::R1000kBd);
         let builder = builder.filter(StandardId::ZERO.into(), ExtendedId::ZERO.into());
         assert!(matches!(builder, Err(Error::Configuration(_))));
 
-        let builder = new("/dev/ttyUSB123", CanBaudRate::Kbitps1000);
+        let builder = new("/dev/ttyUSB123", CanBaudRate::R1000kBd);
         let builder = builder.filter(ExtendedId::ZERO.into(), StandardId::ZERO.into());
         assert!(matches!(builder, Err(Error::Configuration(_))));
     }

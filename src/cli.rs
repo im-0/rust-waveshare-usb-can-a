@@ -1,6 +1,6 @@
 use std::{str::FromStr, time::Duration};
 
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{anyhow, ensure, Context, Error, Result};
 use clap::{Parser, Subcommand};
 use embedded_can::{ExtendedId, Frame as _, Id, StandardId};
 use waveshare_usb_can_a::{CanBaudRate, Frame, EXTENDED_ID_EXTRA_BITS};
@@ -59,8 +59,9 @@ pub(crate) struct DumpOptions {
     #[arg(short = 'u', long, value_name = "MASK", value_parser = parse_data_frame, verbatim_doc_comment)]
     pub unique: Option<Frame>,
 
-    /// CAN bus baud rate.
-    #[arg(value_name = "KBITS_PER_S")]
+    /// CAN bus baud rate. Supported values: 5000, 10000, 20000, 50000, 100000, 125000, 200000,
+    /// 250000, 400000, 500000, 800000, 1000000.
+    #[arg(value_name = "BAUD_RATE", value_parser = parse_can_baud_rate)]
     pub can_baud_rate: CanBaudRate,
 }
 
@@ -74,8 +75,9 @@ pub(crate) struct InjectOptions {
     #[arg(short = 'l', long, value_name = "MILLISECONDS", value_parser = parse_duration_ms)]
     pub loop_inject: Option<Duration>,
 
-    /// CAN bus baud rate.
-    #[arg(value_name = "KBITS_PER_S")]
+    /// CAN bus baud rate. Supported values: 5000, 10000, 20000, 50000, 100000, 125000, 200000,
+    /// 250000, 400000, 500000, 800000, 1000000.
+    #[arg(value_name = "BAUD_RATE", value_parser = parse_can_baud_rate)]
     pub can_baud_rate: CanBaudRate,
 
     /// Frames to inject.
@@ -181,6 +183,13 @@ fn parse_data_frame(str_frame: &str) -> Result<Frame> {
 
     Frame::new(id, &data)
         .with_context(|| format!("Unable to create data frame for \"{}\"", str_frame))
+}
+
+fn parse_can_baud_rate(str_rate: &str) -> Result<CanBaudRate> {
+    str_rate
+        .parse::<u32>()
+        .with_context(|| format!("Invalid CAN baud rate string: \"{}\"", str_rate))
+        .and_then(|value| CanBaudRate::try_from(value).map_err(Error::from))
 }
 
 #[derive(Clone)]
