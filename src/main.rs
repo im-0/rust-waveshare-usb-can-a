@@ -69,6 +69,11 @@ fn main() -> Result<()> {
 }
 
 fn run_dump(args: &cli::Cli, options: &cli::DumpOptions) -> Result<()> {
+    info!(
+        "Dumping frames from CAN bus with baud rate {}...",
+        options.can_baud_rate
+    );
+
     // Open USB2CAN adapter.
     let usb2can = waveshare_usb_can_a::new(&args.serial_path, options.can_baud_rate)
         .serial_baud_rate(options.serial_baud_rate)
@@ -138,6 +143,11 @@ fn get_hashable_id_and_data(frame: &Frame) -> (u32, [u8; 8]) {
 }
 
 fn run_inject(args: &cli::Cli, options: &cli::InjectOptions) -> Result<()> {
+    info!(
+        "Injecting frames into CAN bus with baud rate {}...",
+        options.can_baud_rate
+    );
+
     // Open USB2CAN adapter.
     let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, options.can_baud_rate)
         .serial_baud_rate(options.serial_baud_rate)
@@ -160,6 +170,7 @@ fn run_inject(args: &cli::Cli, options: &cli::InjectOptions) -> Result<()> {
         }
     }
 
+    info!("Done!");
     Ok(())
 }
 
