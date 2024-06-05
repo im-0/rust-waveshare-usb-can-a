@@ -43,7 +43,13 @@ pub(crate) enum SubCommand {
 #[derive(Parser)]
 pub(crate) struct DumpOptions {
     /// Serial receive timeout.
-    #[arg(short = 't', long, value_name = "SECONDS", default_value = "86400", value_parser = parse_duration_s)]
+    #[arg(
+        short = 't',
+        long,
+        value_name = "SECONDS",
+        default_value = "86400",
+        value_parser = parse_duration_s,
+    )]
     pub receive_timeout: Duration,
 
     /// Receive only extended frames (CAN 2.0B). By default, both standard and extended frames
@@ -65,16 +71,31 @@ pub(crate) struct DumpOptions {
     ///     "3ffff.7ff:ff" - Test ID and first data byte for uniqueness.
     ///     "3ffff.7ff:00ff" - Test ID and second data byte for uniqueness.
     ///     "3ffff.7ff:00" - Test only ID uniqueness.
-    #[arg(short = 'u', long, value_name = "MASK", value_parser = parse_data_frame, verbatim_doc_comment)]
+    #[arg(
+        short = 'u',
+        long,
+        value_name = "MASK",
+        value_parser = parse_data_frame,
+        verbatim_doc_comment,
+    )]
     pub unique: Option<Frame>,
 
     /// Serial baud rate. Supported values: 9600, 19200, 38400, 115200, 1228800, 2000000.
-    #[arg(short = 'b', long, value_name = "BAUD_RATE", default_value = "2000000", value_parser = parse_serial_baud_rate)]
+    #[arg(
+        short = 'b',
+        long,
+        value_name = "BAUD_RATE",
+        default_value = "2000000",
+        value_parser = parse_serial_baud_rate,
+    )]
     pub serial_baud_rate: SerialBaudRate,
 
     /// CAN bus baud rate. Supported values: 5000, 10000, 20000, 50000, 100000, 125000, 200000,
     /// 250000, 400000, 500000, 800000, 1000000.
-    #[arg(value_name = "BAUD_RATE", value_parser = parse_can_baud_rate)]
+    #[arg(
+        value_name = "BAUD_RATE",
+        value_parser = parse_can_baud_rate,
+    )]
     pub can_baud_rate: CanBaudRate,
 }
 
@@ -85,31 +106,59 @@ pub(crate) struct InjectOptions {
     pub automatic_retransmission: bool,
 
     /// Inject packets in an infinte loop. Argument is the delay between each loop iteration.
-    #[arg(short = 'l', long, value_name = "MILLISECONDS", value_parser = parse_duration_ms)]
+    #[arg(
+        short = 'l',
+        long,
+        value_name = "MILLISECONDS",
+        value_parser = parse_duration_ms,
+    )]
     pub loop_inject: Option<Duration>,
 
     /// Serial baud rate. Supported values: 9600, 19200, 38400, 115200, 1228800, 2000000.
-    #[arg(short = 'b', long, value_name = "BAUD_RATE", default_value = "2000000", value_parser = parse_serial_baud_rate)]
+    #[arg(
+        short = 'b',
+        long,
+        value_name = "BAUD_RATE",
+        default_value = "2000000",
+        value_parser = parse_serial_baud_rate,
+    )]
     pub serial_baud_rate: SerialBaudRate,
 
     /// CAN bus baud rate. Supported values: 5000, 10000, 20000, 50000, 100000, 125000, 200000,
     /// 250000, 400000, 500000, 800000, 1000000.
-    #[arg(value_name = "BAUD_RATE", value_parser = parse_can_baud_rate)]
+    #[arg(
+        value_name = "BAUD_RATE",
+        value_parser = parse_can_baud_rate,
+    )]
     pub can_baud_rate: CanBaudRate,
 
     /// Frames to inject.
-    #[arg(value_name = "FRAME", required = true, value_parser = parse_frame)]
+    #[arg(
+        value_name = "FRAME",
+        required = true,
+        value_parser = parse_frame,
+    )]
     pub frames: Vec<Frame>,
 }
 
 #[derive(Parser)]
 pub(crate) struct SetSerialBaudRateOptions {
     /// Old serial baud rate. Supported values: 9600, 19200, 38400, 115200, 1228800, 2000000.
-    #[arg(short = 'b', long, value_name = "OLD_BAUD_RATE", default_value = "2000000", value_parser = parse_serial_baud_rate)]
+    #[arg(
+        short = 'b',
+        long,
+        value_name = "OLD_BAUD_RATE",
+        default_value = "2000000",
+        value_parser = parse_serial_baud_rate,
+    )]
     pub old_serial_baud_rate: SerialBaudRate,
 
     /// Old serial baud rate. Supported values: 9600, 19200, 38400, 115200, 1228800, 2000000.
-    #[arg(value_name = "NEW_BAUD_RATE", default_value = "2000000", value_parser = parse_serial_baud_rate)]
+    #[arg(
+        value_name = "NEW_BAUD_RATE",
+        default_value = "2000000",
+        value_parser = parse_serial_baud_rate,
+    )]
     pub new_serial_baud_rate: SerialBaudRate,
 }
 
@@ -121,15 +170,33 @@ pub(crate) struct SelfTestOptions {
     pub send_frames: bool,
 
     /// Serial receive timeout.
-    #[arg(short = 't', long, value_name = "MILLISECONDS", default_value = "1000", value_parser = parse_duration_ms)]
+    #[arg(
+        short = 't',
+        long,
+        value_name = "MILLISECONDS",
+        default_value = "1000",
+        value_parser = parse_duration_ms,
+    )]
     pub receive_timeout: Duration,
 
     /// Serial baud rate for the first serial port. Supported values: 9600, 19200, 38400, 115200, 1228800, 2000000.
-    #[arg(short = 'b', long, value_name = "BAUD_RATE", default_value = "2000000", value_parser = parse_serial_baud_rate)]
+    #[arg(
+        short = 'b',
+        long,
+        value_name = "BAUD_RATE",
+        default_value = "2000000",
+        value_parser = parse_serial_baud_rate,
+    )]
     pub first_serial_baud_rate: SerialBaudRate,
 
     /// Serial baud rate for the second serial port. Supported values: 9600, 19200, 38400, 115200, 1228800, 2000000.
-    #[arg(short = 'B', long, value_name = "BAUD_RATE", default_value = "2000000", value_parser = parse_serial_baud_rate)]
+    #[arg(
+        short = 'B',
+        long,
+        value_name = "BAUD_RATE",
+        default_value = "2000000",
+        value_parser = parse_serial_baud_rate,
+    )]
     pub second_serial_baud_rate: SerialBaudRate,
 
     /// Path to the serial device file for the second USB2CAN adapter.
