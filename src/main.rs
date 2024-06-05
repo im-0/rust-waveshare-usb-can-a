@@ -26,10 +26,11 @@
 
 use std::collections::HashSet;
 use std::io::stderr;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{ensure, Context, Result};
 use clap::Parser;
+use cli::PerfSubCommand;
 use embedded_can::{blocking::Can, StandardId};
 use embedded_can::{ExtendedId, Frame as _, Id};
 use tracing::level_filters::LevelFilter;
@@ -44,6 +45,7 @@ use waveshare_usb_can_a::{
 mod cli;
 
 const ADAPTER_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+const REPORT_THROUGHPUT_EACH: Duration = Duration::from_secs(1);
 
 fn main() -> Result<()> {
     // Configure logging.
@@ -62,6 +64,7 @@ fn main() -> Result<()> {
     match &args.subcommand {
         cli::SubCommand::Dump(options) => run_dump(&args, options),
         cli::SubCommand::Inject(options) => run_inject(&args, options),
+        cli::SubCommand::Perf(options) => run_perf(&args, options),
         cli::SubCommand::SetSerialBaudRate(options) => run_set_serial_baud_rate(&args, options),
         cli::SubCommand::ResetToFactoryDefaults => run_reset_to_factory_defaults(&args),
         cli::SubCommand::SelfTest(options) => run_self_test(&args, options),
@@ -172,6 +175,131 @@ fn run_inject(args: &cli::Cli, options: &cli::InjectOptions) -> Result<()> {
 
     info!("Done!");
     Ok(())
+}
+
+fn run_perf(args: &cli::Cli, options: &cli::PerfOptions) -> Result<()> {
+    info!(
+        "CAN bus throughput test with baud rate {}...",
+        options.can_baud_rate
+    );
+
+    // Open USB2CAN adapter.
+    let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, options.can_baud_rate)
+        .serial_baud_rate(options.serial_baud_rate)
+        .serial_receive_timeout(options.receive_timeout)
+        .automatic_retransmission(false)
+        .open()
+        .context("Failed to open USB2CAN device")?;
+
+    match options.transmit_or_receive {
+        PerfSubCommand::Transmit => perf_transmit(&mut usb2can),
+        PerfSubCommand::Receive => perf_receive(&mut usb2can),
+    }
+    // Inject frames into CAN bus.
+}
+
+fn perf_transmit(usb2can: &mut Usb2Can) -> Result<()> {
+    info!("Transmitting frames...");
+    loop {
+        for id in ExtendedId::ZERO.as_raw()..=ExtendedId::MAX.as_raw() {
+            let data = [
+                id.to_le_bytes()[0],
+                id.to_le_bytes()[1],
+                id.to_le_bytes()[2],
+                id.to_le_bytes()[3],
+                id.to_le_bytes()[0],
+                id.to_le_bytes()[1],
+                id.to_le_bytes()[2],
+                id.to_le_bytes()[3],
+            ];
+            let frame = Frame::new(
+                ExtendedId::new(id).expect("Logic error: invalid test ID"),
+                &data,
+            )
+            .expect("Logic error: bad test frame");
+            usb2can.transmit(&frame)?;
+        }
+    }
+}
+
+fn perf_receive(usb2can: &mut Usb2Can) -> Result<()> {
+    info!("Receiving frames...");
+    let mut expected_id = ExtendedId::ZERO.as_raw();
+    let mut frames_missing = 0usize;
+    let mut frames_corrupted = 0usize;
+    let mut frames_ok = 0usize;
+    let started = Instant::now();
+    let mut prev_report = started;
+    loop {
+        let now = Instant::now();
+        if now.duration_since(prev_report) >= REPORT_THROUGHPUT_EACH {
+            let elapsed = now.duration_since(started).as_secs_f64();
+            let (frames_per_second, bits_per_second) = if elapsed > f64::EPSILON {
+                (
+                    frames_ok as f64 / elapsed,
+                    frames_ok as f64 * 8.0 * 8.0 / elapsed,
+                )
+            } else {
+                (0.0, 0.0)
+            };
+
+            info!(
+                "{:.03} frames/s, {:.03} bits/s ({} frames ok, {} missing, {} corrupted)",
+                frames_per_second, bits_per_second, frames_ok, frames_missing, frames_corrupted
+            );
+            prev_report = now;
+        }
+
+        let frame = usb2can.receive()?;
+
+        let frame_id = match frame.id() {
+            Id::Standard(_) => {
+                error!("Received unexpected standard frame: {}", frame);
+                frames_corrupted += 1;
+                continue;
+            }
+
+            Id::Extended(id) => id.as_raw(),
+        };
+
+        if frame.is_remote_frame() {
+            error!("Received unexpected remote frame: {}", frame);
+            frames_corrupted += 1;
+            continue;
+        }
+
+        if (frame_id.to_le_bytes() != frame.data().get(0..4).unwrap_or(&[0; 4]))
+            || (frame_id.to_le_bytes() != frame.data().get(4..8).unwrap_or(&[0; 4]))
+        {
+            error!("Received corrupted frame: {}", frame);
+            frames_corrupted += 1;
+            continue;
+        }
+
+        if frame_id != expected_id {
+            if frame_id > expected_id {
+                frames_missing += (frame_id - expected_id) as usize;
+            } else {
+                // Overflow happened.
+                frames_missing +=
+                    (ExtendedId::MAX.as_raw() - expected_id) as usize + frame_id as usize + 1;
+            }
+
+            expected_id = frame_id + 1;
+            if expected_id > ExtendedId::MAX.as_raw() {
+                expected_id = ExtendedId::ZERO.as_raw();
+            }
+
+            continue;
+        }
+
+        frames_ok += 1;
+
+        expected_id += 1;
+        if expected_id > ExtendedId::MAX.as_raw() {
+            expected_id = ExtendedId::ZERO.as_raw();
+        }
+    }
 }
 
 fn run_set_serial_baud_rate(

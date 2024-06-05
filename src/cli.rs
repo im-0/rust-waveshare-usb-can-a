@@ -26,6 +26,10 @@ pub(crate) enum SubCommand {
     #[command()]
     Inject(InjectOptions),
 
+    /// CAN bus throughput test.
+    #[command()]
+    Perf(PerfOptions),
+
     /// Configure serial baud rate. Serial baud rate persists when adapter is powered off
     /// and can be reset to the default 2000000 Bd by pressing the button during power on.
     #[command()]
@@ -139,6 +143,52 @@ pub(crate) struct InjectOptions {
         value_parser = parse_frame,
     )]
     pub frames: Vec<Frame>,
+}
+
+#[derive(Parser)]
+pub(crate) struct PerfOptions {
+    /// Serial receive timeout.
+    #[arg(
+        short = 't',
+        long,
+        value_name = "SECONDS",
+        default_value = "86400",
+        value_parser = parse_duration_s,
+    )]
+    pub receive_timeout: Duration,
+
+    /// Serial baud rate. Supported values: 9600, 19200, 38400, 115200, 1228800, 2000000.
+    #[arg(
+        short = 'b',
+        long,
+        value_name = "BAUD_RATE",
+        default_value = "2000000",
+        value_parser = parse_serial_baud_rate,
+    )]
+    pub serial_baud_rate: SerialBaudRate,
+
+    /// CAN bus baud rate. Supported values: 5000, 10000, 20000, 50000, 100000, 125000, 200000,
+    /// 250000, 400000, 500000, 800000, 1000000.
+    #[arg(
+        value_name = "BAUD_RATE",
+        value_parser = parse_can_baud_rate,
+    )]
+    pub can_baud_rate: CanBaudRate,
+
+    /// Transmit or receive.
+    #[command(subcommand)]
+    pub transmit_or_receive: PerfSubCommand,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum PerfSubCommand {
+    /// Transmit frames.
+    #[command()]
+    Transmit,
+
+    /// Receive frames.
+    #[command()]
+    Receive,
 }
 
 #[derive(Parser)]
