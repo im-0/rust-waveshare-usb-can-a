@@ -63,7 +63,7 @@ fn main() -> Result<()> {
         cli::SubCommand::Dump(options) => run_dump(&args, options),
         cli::SubCommand::Inject(options) => run_inject(&args, options),
         cli::SubCommand::SetSerialBaudRate(options) => run_set_serial_baud_rate(&args, options),
-        &cli::SubCommand::ResetToFactoryDefaults => run_reset_to_factory_defaults(&args),
+        cli::SubCommand::ResetToFactoryDefaults => run_reset_to_factory_defaults(&args),
         cli::SubCommand::SelfTest(options) => run_self_test(&args, options),
     }
 }
