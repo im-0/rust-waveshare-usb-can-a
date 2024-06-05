@@ -308,6 +308,7 @@ fn run_self_test(args: &cli::Cli, options: &cli::SelfTestOptions) -> Result<()> 
                 // Open USB2CAN adapter.
                 let mut usb2can_a = waveshare_usb_can_a::new(&args.serial_path, can_baud_rate)
                     .filter(filter, mask)?
+                    .serial_baud_rate(options.first_serial_baud_rate)
                     .serial_receive_timeout(options.receive_timeout)
                     .loopback(options.second_serial_path.is_none())
                     .silent(options.second_serial_path.is_none() && !options.send_frames)
@@ -318,6 +319,7 @@ fn run_self_test(args: &cli::Cli, options: &cli::SelfTestOptions) -> Result<()> 
                 if let Some(ref second_serial_path) = options.second_serial_path {
                     let mut usb2can_b = waveshare_usb_can_a::new(second_serial_path, can_baud_rate)
                         .filter(filter, mask)?
+                        .serial_baud_rate(options.second_serial_baud_rate)
                         .serial_receive_timeout(options.receive_timeout)
                         .automatic_retransmission(false)
                         .open()

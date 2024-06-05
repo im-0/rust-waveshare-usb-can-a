@@ -124,6 +124,14 @@ pub(crate) struct SelfTestOptions {
     #[arg(short = 't', long, value_name = "MILLISECONDS", default_value = "1000", value_parser = parse_duration_ms)]
     pub receive_timeout: Duration,
 
+    /// Serial baud rate for the first serial port. Supported values: 9600, 19200, 38400, 115200, 1228800, 2000000.
+    #[arg(short = 'b', long, value_name = "BAUD_RATE", default_value = "2000000", value_parser = parse_serial_baud_rate)]
+    pub first_serial_baud_rate: SerialBaudRate,
+
+    /// Serial baud rate for the second serial port. Supported values: 9600, 19200, 38400, 115200, 1228800, 2000000.
+    #[arg(short = 'B', long, value_name = "BAUD_RATE", default_value = "2000000", value_parser = parse_serial_baud_rate)]
+    pub second_serial_baud_rate: SerialBaudRate,
+
     /// Path to the serial device file for the second USB2CAN adapter.
     /// If not provided, loopback mode of the only adapter is used for testing.
     pub second_serial_path: Option<String>,
