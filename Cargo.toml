@@ -30,6 +30,16 @@ version = "0.4.1"
 default_features = false
 features = []
 
+[workspace.dependencies.proptest]
+version = "1.4.0"
+default_features = false
+features = ["bit-set", "std"]
+
+[workspace.dependencies.proptest-derive]
+version = "0.4.0"
+default_features = false
+features = []
+
 [workspace.dependencies.serialport]
 version = "4.3.0"
 default_features = false

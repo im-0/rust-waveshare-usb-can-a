@@ -1055,7 +1055,10 @@ fn id_to_bytes(id: Id) -> [u8; 4] {
 
 #[cfg(test)]
 mod tests {
+    use std::panic;
+
     use embedded_can::{ExtendedId, StandardId};
+    use proptest::{arbitrary::any, collection::vec, proptest};
 
     use super::*;
 
@@ -1084,6 +1087,30 @@ mod tests {
         let frame = Frame::new(ExtendedId::MAX, &[0, 0, 0, 0, 0, 0, 0, 0]).unwrap();
         let message = frame.to_message();
         assert_eq!(message.len(), MAX_VARIABLE_MESSAGE_SIZE);
+    }
+
+    proptest! {
+        #[test]
+        fn random_send_message_size_standard(
+                id in StandardId::ZERO.as_raw()..StandardId::MAX.as_raw(),
+                data in vec(any::<u8>(), 0..=MAX_DATA_LENGTH),
+        ) {
+            let id = StandardId::new(id).expect("Logic error: proptest produced invalid standard ID");
+            let frame = Frame::new(id, &data).unwrap();
+            let message = frame.to_message();
+            assert!(message.len() <= MAX_VARIABLE_MESSAGE_SIZE);
+        }
+
+        #[test]
+        fn random_send_message_size_extended(
+                id in ExtendedId::ZERO.as_raw()..ExtendedId::MAX.as_raw(),
+                data in vec(any::<u8>(), 0..=MAX_DATA_LENGTH),
+        ) {
+            let id = ExtendedId::new(id).expect("Logic error: proptest produced invalid extended ID");
+            let frame = Frame::new(id, &data).unwrap();
+            let message = frame.to_message();
+            assert!(message.len() <= MAX_VARIABLE_MESSAGE_SIZE);
+        }
     }
 
     #[test]
@@ -1282,6 +1309,46 @@ mod tests {
 
         let frame = Frame::new_remote(ExtendedId::MAX, 0).unwrap();
         check_serialize_deserialize_frame(&frame);
+    }
+
+    proptest! {
+        #[test]
+        fn random_serde_frame_standard(
+                id in StandardId::ZERO.as_raw()..StandardId::MAX.as_raw(),
+                data in vec(any::<u8>(), 0..=MAX_DATA_LENGTH),
+        ) {
+            let id = StandardId::new(id).expect("Logic error: proptest produced invalid standard ID");
+            let frame = Frame::new(id, &data).unwrap();
+            check_serialize_deserialize_frame(&frame);
+        }
+
+        #[test]
+        fn random_serde_frame_extended(
+                id in ExtendedId::ZERO.as_raw()..ExtendedId::MAX.as_raw(),
+                data in vec(any::<u8>(), 0..=MAX_DATA_LENGTH),
+        ) {
+            let id = ExtendedId::new(id).expect("Logic error: proptest produced invalid standard ID");
+            let frame = Frame::new(id, &data).unwrap();
+            check_serialize_deserialize_frame(&frame);
+        }
+
+        fn random_serde_frame_remote_standard(
+            id in StandardId::ZERO.as_raw()..StandardId::MAX.as_raw(),
+            dlc in 0..=MAX_DATA_LENGTH,
+        ) {
+            let id = StandardId::new(id).expect("Logic error: proptest produced invalid standard ID");
+            let frame = Frame::new_remote(id, dlc).unwrap();
+            check_serialize_deserialize_frame(&frame);
+        }
+
+        fn random_serde_frame_remote_extended(
+            id in ExtendedId::ZERO.as_raw()..ExtendedId::MAX.as_raw(),
+            dlc in 0..=MAX_DATA_LENGTH,
+        ) {
+            let id = ExtendedId::new(id).expect("Logic error: proptest produced invalid standard ID");
+            let frame = Frame::new_remote(id, dlc).unwrap();
+            check_serialize_deserialize_frame(&frame);
+        }
     }
 
     // TODO: Test serialization and deserialization with injected errors.
