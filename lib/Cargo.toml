@@ -1,0 +1,25 @@
+[package]
+name = "waveshare-usb-can-a"
+description = "Library for Waveshare's USB to CAN Adapter Model A"
+
+keywords = [
+    "usb",
+    "can",
+    "serial",
+]
+categories = [
+    "hardware-support",
+]
+
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+readme = { workspace = true }
+
+[dependencies]
+embedded-can = { workspace = true }
+serialport = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

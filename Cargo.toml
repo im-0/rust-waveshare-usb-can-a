@@ -1,55 +1,51 @@
-[package]
-name = "waveshare-usb-can-a"
+[workspace]
+members = [
+    "lib",
+    "cli",
+]
+
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 
 authors = ["Ivan Mironov <mironov.ivan@gmail.com>"]
-description = "CLI and library for Waveshare's USB to CAN Adapter Model A"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/im-0/rust-waveshare-usb-can-a"
 readme = "README.md"
-keywords = [
-    "usb",
-    "can",
-    "cli",
-    "serial",
-]
-categories = [
-    "command-line-utilities",
-    "hardware-support",
-]
 
-[dependencies.anyhow]
+[workspace.dependencies.anyhow]
 version = "1.0.86"
 default_features = false
 features = ["std"]
 
-[dependencies.clap]
+[workspace.dependencies.clap]
 version = "4.5.4"
 default_features = false
 features = ["cargo", "color", "derive", "error-context", "help", "std", "usage", "wrap_help"]
 
-[dependencies.embedded-can]
+[workspace.dependencies.embedded-can]
 version = "0.4.1"
 default_features = false
 features = []
 
-[dependencies.serialport]
+[workspace.dependencies.serialport]
 version = "4.3.0"
 default_features = false
 features = []
 
-[dependencies.thiserror]
+[workspace.dependencies.thiserror]
 version = "1.0.61"
 default_features = false
 features = []
 
-[dependencies.tracing]
+[workspace.dependencies.tracing]
 version = "0.1.40"
 default_features = false
 features = ["std"]
 
-[dependencies.tracing-subscriber]
+[workspace.dependencies.tracing-subscriber]
 version = "0.3.18"
 default_features = false
 features = [
@@ -60,3 +56,9 @@ features = [
     "smallvec",
     "tracing-log",
 ]
+
+[workspace.dependencies.waveshare-usb-can-a]
+version = "0.1.0"
+default_features = false
+features = []
+path = "lib"

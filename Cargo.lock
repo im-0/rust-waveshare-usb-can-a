@@ -656,13 +656,22 @@ checksum = "af190c94f2773fdb3729c55b007a722abb5384da03bc0986df4c289bf5567e96"
 name = "waveshare-usb-can-a"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "clap",
  "embedded-can",
  "serialport",
  "thiserror",
  "tracing",
+]
+
+[[package]]
+name = "waveshare-usb-can-a-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "embedded-can",
+ "tracing",
  "tracing-subscriber",
+ "waveshare-usb-can-a",
 ]
 
 [[package]]
