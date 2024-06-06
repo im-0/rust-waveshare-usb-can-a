@@ -405,6 +405,9 @@ fn ensure_no_prefix(hex: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+    use proptest::{arbitrary::any, collection::vec, proptest};
+    use waveshare_usb_can_a::MAX_DATA_LENGTH;
+
     use super::*;
 
     #[test]
@@ -477,6 +480,46 @@ mod tests {
         );
     }
 
+    proptest! {
+        #[test]
+        fn random_parse_data_frame_standard(
+                id in StandardId::ZERO.as_raw()..StandardId::MAX.as_raw(),
+                data in vec(any::<u8>(), 0..=MAX_DATA_LENGTH),
+        ) {
+            let id = StandardId::new(id).expect("Logic error: proptest produced invalid standard ID");
+            let frame = Frame::new(id, &data).unwrap();
+            check_fmt_parse_frame(&frame);
+        }
+
+        #[test]
+        fn random_parse_data_frame_extended(
+                id in ExtendedId::ZERO.as_raw()..ExtendedId::MAX.as_raw(),
+                data in vec(any::<u8>(), 0..=MAX_DATA_LENGTH),
+        ) {
+            let id = ExtendedId::new(id).expect("Logic error: proptest produced invalid standard ID");
+            let frame = Frame::new(id, &data).unwrap();
+            check_fmt_parse_frame(&frame);
+        }
+
+        fn random_parse_remote_frame_standard(
+            id in StandardId::ZERO.as_raw()..StandardId::MAX.as_raw(),
+            dlc in 0..=MAX_DATA_LENGTH,
+        ) {
+            let id = StandardId::new(id).expect("Logic error: proptest produced invalid standard ID");
+            let frame = Frame::new_remote(id, dlc).unwrap();
+            check_fmt_parse_frame(&frame);
+        }
+
+        fn random_parse_remote_frame_extended(
+            id in ExtendedId::ZERO.as_raw()..ExtendedId::MAX.as_raw(),
+            dlc in 0..=MAX_DATA_LENGTH,
+        ) {
+            let id = ExtendedId::new(id).expect("Logic error: proptest produced invalid standard ID");
+            let frame = Frame::new_remote(id, dlc).unwrap();
+            check_fmt_parse_frame(&frame);
+        }
+    }
+
     #[test]
     fn parse_id_standard() {
         assert_eq!(parse_id("000").unwrap(), StandardId::ZERO.into());
@@ -487,5 +530,14 @@ mod tests {
     fn parse_id_extended() {
         assert_eq!(parse_id("00000.000").unwrap(), ExtendedId::ZERO.into());
         assert_eq!(parse_id("3ffff.7ff").unwrap(), ExtendedId::MAX.into());
+    }
+
+    fn check_fmt_parse_frame(frame: &Frame) {
+        let frame_str = format!("{}", frame);
+        let frame_str = frame_str.split_ascii_whitespace().collect::<Vec<_>>();
+
+        let parsed_frame = parse_frame(frame_str[0]).unwrap();
+
+        assert_eq!(frame, &parsed_frame);
     }
 }

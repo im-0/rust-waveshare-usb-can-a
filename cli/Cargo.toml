@@ -31,3 +31,7 @@ embedded-can = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 waveshare-usb-can-a = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+proptest-derive = { workspace = true }

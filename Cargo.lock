@@ -801,6 +801,8 @@ dependencies = [
  "anyhow",
  "clap",
  "embedded-can",
+ "proptest",
+ "proptest-derive",
  "tracing",
  "tracing-subscriber",
  "waveshare-usb-can-a",
