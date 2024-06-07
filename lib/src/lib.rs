@@ -27,7 +27,6 @@
 // TODO: Implement manual CAN bus baudrate selection (SJW, BS1, BS2, prescale).
 // TODO: Implement ID filtering configuration.
 // TODO: Implement configuration change on the fly.
-// TODO: Throttle transmitting to the CAN baud rate.
 
 use core::panic;
 use std::{
@@ -38,7 +37,7 @@ use std::{
     result,
     sync::{Arc, Mutex, MutexGuard},
     thread::sleep,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use embedded_can::{blocking, ExtendedId, Frame as _, Id, StandardId};
@@ -48,12 +47,16 @@ use tracing::{debug, trace};
 
 pub const DEFAULT_SERIAL_BAUD_RATE: SerialBaudRate = SerialBaudRate::R2000000Bd;
 pub const DEFAULT_SERIAL_RECEIVE_TIMEOUT: Duration = Duration::from_millis(1000);
+pub const DEFAULT_FRAME_DELAY_MULTIPLIER: f64 = 1.05;
 
 pub const MAX_DATA_LENGTH: usize = 8;
 
 pub const BASE_ID_BITS: usize = 11;
 pub const EXTENDED_ID_BITS: usize = 29;
 pub const EXTENDED_ID_EXTRA_BITS: usize = EXTENDED_ID_BITS - BASE_ID_BITS;
+
+const CONFIGURATION_DELAY: Duration = Duration::from_millis(100);
+const BLINK_DELAY: Duration = Duration::from_millis(700);
 
 const MAX_FIXED_MESSAGE_SIZE: usize = 20;
 const MAX_VARIABLE_MESSAGE_SIZE: usize = 15;
@@ -120,11 +123,12 @@ impl embedded_can::Error for Error {
 
 pub type Result<T> = result::Result<T, Error>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Usb2CanBuilder {
     path: String,
     serial_baud_rate: SerialBaudRate,
     serial_receive_timeout: Duration,
+    frame_delay_multiplier: f64,
     adapter_configuration: Usb2CanConfiguration,
 }
 
@@ -156,6 +160,16 @@ impl Usb2CanBuilder {
     #[must_use]
     pub const fn set_serial_receive_timeout(mut self, serial_receive_timeout: Duration) -> Self {
         self.serial_receive_timeout = serial_receive_timeout;
+        self
+    }
+
+    pub const fn frame_delay_multiplier(&self) -> f64 {
+        self.frame_delay_multiplier
+    }
+
+    #[must_use]
+    pub const fn set_frame_delay_multiplier(mut self, frame_delay_multiplier: f64) -> Self {
+        self.frame_delay_multiplier = frame_delay_multiplier;
         self
     }
 
@@ -192,15 +206,21 @@ impl Usb2CanBuilder {
         let mut receiver = Receiver::new(serial.try_clone()?);
         receiver.set_receive_timeout(self.serial_receive_timeout)?;
 
+        let mut transmitter = Transmitter::new(serial);
+        transmitter.set_frame_delay_multiplier(self.frame_delay_multiplier);
+
+        if with_blink_delay {
+            let delay = self.serial_baud_rate.to_blink_delay();
+            receiver.add_delay(delay);
+            transmitter.add_delay(delay);
+        };
+
         let mut usb2can = Usb2Can {
             receiver: Arc::new(Mutex::new(receiver)),
-            transmitter: Arc::new(Mutex::new(Transmitter::new(serial))),
+            transmitter: Arc::new(Mutex::new(transmitter)),
             configuration: Arc::new(Mutex::new(self.adapter_configuration.clone())),
         };
 
-        if with_blink_delay {
-            self.serial_baud_rate.sleep_while_blinking();
-        }
         usb2can.set_configuration_inner()?;
 
         Ok(usb2can)
@@ -215,6 +235,7 @@ pub fn new<'a>(
         path: path.into().into_owned(),
         serial_baud_rate: DEFAULT_SERIAL_BAUD_RATE,
         serial_receive_timeout: DEFAULT_SERIAL_RECEIVE_TIMEOUT,
+        frame_delay_multiplier: DEFAULT_FRAME_DELAY_MULTIPLIER,
         adapter_configuration: adapter_configuration.clone(),
     }
 }
@@ -379,17 +400,6 @@ pub enum SerialBaudRate {
 }
 
 impl SerialBaudRate {
-    const BLINK_DELAY: Duration = Duration::from_millis(700);
-
-    fn sleep_while_blinking(self) {
-        let blink_delay = self.to_blink_delay();
-        debug!(
-            "Waiting {:.03}s while adapter is blinking",
-            blink_delay.as_secs_f64()
-        );
-        sleep(blink_delay);
-    }
-
     fn to_blink_delay(self) -> Duration {
         let blinks = match self {
             Self::R9600Bd => 6,
@@ -400,7 +410,7 @@ impl SerialBaudRate {
             Self::R2000000Bd => 1,
         };
 
-        Self::BLINK_DELAY * blinks
+        BLINK_DELAY * blinks
     }
 
     const fn to_configuration_message(self) -> [u8; MAX_FIXED_MESSAGE_SIZE] {
@@ -516,6 +526,10 @@ impl CanBaudRate {
             Self::R1000kBd => 0x01,
         }
     }
+
+    fn to_bit_length(self) -> Duration {
+        Duration::from_secs(1) / u32::from(self)
+    }
 }
 
 impl Display for CanBaudRate {
@@ -594,8 +608,6 @@ pub struct Usb2Can {
 }
 
 impl Usb2Can {
-    const CONFIGURATION_DELAY: Duration = Duration::from_millis(100);
-
     pub fn name(&self) -> Result<String> {
         self.lock_transmitter()
             .and_then(|transmitter| transmitter.name())
@@ -634,11 +646,25 @@ impl Usb2Can {
         self.fill_checksum_and_transmit_configuration_message(&mut config_message)?;
 
         // Adapater does not respond while blinking.
-        serial_baud_rate.sleep_while_blinking();
+        let delay = serial_baud_rate.to_blink_delay();
+
+        self.lock_receiver()?.add_delay(delay);
+
+        let mut transmitter = self.lock_transmitter()?;
+        transmitter.add_delay(delay);
 
         // Set the new baud rate on underlying serial interface.
-        self.lock_transmitter()?
-            .set_serial_baud_rate(serial_baud_rate)
+        transmitter.set_serial_baud_rate(serial_baud_rate)
+    }
+
+    pub fn frame_delay_multiplier(&self) -> Result<f64> {
+        self.lock_transmitter()
+            .map(|transmitter| transmitter.frame_delay_multiplier())
+    }
+
+    pub fn set_frame_delay_multiplier(&mut self, frame_delay_multiplier: f64) -> Result<()> {
+        self.lock_transmitter()
+            .map(|mut transmitter| transmitter.set_frame_delay_multiplier(frame_delay_multiplier))
     }
 
     fn fill_checksum_and_transmit_configuration_message(
@@ -647,15 +673,15 @@ impl Usb2Can {
     ) -> Result<()> {
         Self::fill_checksum(config_message);
 
-        self.lock_receiver()?.clear()?;
-        self.lock_transmitter()?.transmit_all(config_message)?;
+        let mut receiver = self.lock_receiver()?;
+        let mut transmitter = self.lock_transmitter()?;
+
+        receiver.clear()?;
+        transmitter.transmit_all(config_message)?;
 
         // Adapter needs some time to process the configuration change.
-        debug!(
-            "Waiting {}s for configuration change to take effect",
-            Self::CONFIGURATION_DELAY.as_secs_f64()
-        );
-        sleep(Self::CONFIGURATION_DELAY);
+        receiver.add_delay(CONFIGURATION_DELAY);
+        transmitter.add_delay(CONFIGURATION_DELAY);
 
         Ok(())
     }
@@ -695,7 +721,19 @@ impl blocking::Can for Usb2Can {
     type Error = Error;
 
     fn transmit(&mut self, frame: &Frame) -> Result<()> {
-        self.lock_transmitter()?.transmit_frame(frame)
+        let mut transmitter = self.lock_transmitter()?;
+
+        transmitter.transmit_frame(frame)?;
+
+        let delay_multipyer = transmitter.frame_delay_multiplier();
+        if delay_multipyer > f64::EPSILON {
+            let delay = self.lock_configuration()?.can_baud_rate.to_bit_length()
+                * frame.length_bound_in_bits();
+            let delay = delay.mul_f64(delay_multipyer);
+            transmitter.add_delay(delay);
+        }
+
+        Ok(())
     }
 
     fn receive(&mut self) -> Result<Self::Frame> {
@@ -705,11 +743,17 @@ impl blocking::Can for Usb2Can {
 
 struct Transmitter {
     serial: Box<dyn SerialPort>,
+    ready_at: Instant,
+    frame_delay_multiplier: f64,
 }
 
 impl Transmitter {
     fn new(serial: Box<dyn SerialPort>) -> Self {
-        Self { serial }
+        Self {
+            serial,
+            ready_at: Instant::now(),
+            frame_delay_multiplier: 0.0,
+        }
     }
 
     fn name(&self) -> Result<String> {
@@ -735,11 +779,20 @@ impl Transmitter {
     }
 
     fn set_serial_baud_rate(&mut self, serial_baud_rate: SerialBaudRate) -> Result<()> {
+        self.delay();
         self.serial
             .set_baud_rate(u32::from(serial_baud_rate))
             .map_err(|error| {
                 Error::SetConfiguration(format!("Failed to set serial baud rate: {}", error))
             })
+    }
+
+    const fn frame_delay_multiplier(&self) -> f64 {
+        self.frame_delay_multiplier
+    }
+
+    fn set_frame_delay_multiplier(&mut self, frame_delay_multiplier: f64) {
+        self.frame_delay_multiplier = frame_delay_multiplier;
     }
 
     fn transmit_frame(&mut self, frame: &Frame) -> Result<()> {
@@ -748,10 +801,32 @@ impl Transmitter {
     }
 
     fn transmit_all(&mut self, message: &[u8]) -> Result<()> {
+        self.delay();
         trace!("Writing into serial: {:?}", message);
         self.serial.write_all(message)?;
         self.serial.flush()?;
         Ok(())
+    }
+
+    fn delay(&self) {
+        let now = Instant::now();
+        if now < self.ready_at {
+            let delay = self.ready_at - now;
+            trace!(
+                "Sleeping for {:.03}s before transmitting anything...",
+                delay.as_secs_f64()
+            );
+            sleep(delay);
+        }
+    }
+
+    fn add_delay(&mut self, delay: Duration) {
+        let now = Instant::now();
+        if now > self.ready_at {
+            self.ready_at = now + delay;
+        } else {
+            self.ready_at += delay;
+        }
     }
 }
 
@@ -759,6 +834,7 @@ struct Receiver {
     read_buffer: BufReader<Box<dyn SerialPort>>,
     leftover: VecDeque<u8>,
     sync_attempts_left: usize,
+    ready_at: Instant,
 }
 
 impl Receiver {
@@ -767,6 +843,7 @@ impl Receiver {
             read_buffer: BufReader::new(serial),
             leftover: VecDeque::with_capacity(MAX_MESSAGE_SIZE),
             sync_attempts_left: SYNC_ATTEMPTS,
+            ready_at: Instant::now(),
         }
     }
 
@@ -836,6 +913,8 @@ impl Receiver {
 
     fn receive_byte(&mut self) -> Result<u8> {
         if self.leftover.is_empty() {
+            self.delay();
+
             let mut byte = [0];
             self.read_buffer.read_exact(&mut byte).map_err(|error| {
                 if error.kind() == io::ErrorKind::TimedOut {
@@ -866,6 +945,27 @@ impl Receiver {
         self.leftover.clear();
         self.sync_attempts_left = SYNC_ATTEMPTS;
         Ok(())
+    }
+
+    fn delay(&self) {
+        let now = Instant::now();
+        if now < self.ready_at {
+            let delay = self.ready_at - now;
+            debug!(
+                "Sleeping for {:.03}s before trying to receive anything...",
+                delay.as_secs_f64()
+            );
+            sleep(delay);
+        }
+    }
+
+    fn add_delay(&mut self, delay: Duration) {
+        let now = Instant::now();
+        if now > self.ready_at {
+            self.ready_at = now + delay;
+        } else {
+            self.ready_at += delay;
+        }
     }
 }
 
@@ -1096,6 +1196,28 @@ impl Frame {
         message.push(PROTO_END);
 
         message
+    }
+
+    fn length_bound_in_bits(&self) -> u32 {
+        // This is maximum possible length, actual length may be shorter.
+        // See https://en.wikipedia.org/wiki/CAN_bus#Bit_stuffing for
+        // details.
+
+        let data_len = if self.is_data_frame() {
+            self.dlc() as u32 * 8
+        } else {
+            0
+        };
+
+        let frame_without_data = if self.is_standard() {
+            44 + (34 + data_len - 1) / 4
+        } else {
+            64 + (54 + data_len - 1) / 4
+        };
+
+        let interframe_spacing = 3;
+
+        data_len + frame_without_data + interframe_spacing
     }
 }
 
@@ -1557,6 +1679,30 @@ mod tests {
         move || {
             iter.next()
                 .ok_or_else(|| Error::RecvUnexpected("Unexpected end of data".into()))
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn random_length_bound_frame_standard(
+                id in StandardId::ZERO.as_raw()..=StandardId::MAX.as_raw(),
+                data in vec(any::<u8>(), 0..=MAX_DATA_LENGTH),
+        ) {
+            let id = StandardId::new(id).expect("Logic error: proptest produced invalid standard ID");
+            let frame = Frame::new(id, &data).unwrap();
+            // https://en.wikipedia.org/wiki/CAN_bus#Bit_stuffing
+            assert!(frame.length_bound_in_bits() <= 132 + 3);
+        }
+
+        #[test]
+        fn random_length_bound_frame_extended(
+                id in ExtendedId::ZERO.as_raw()..=ExtendedId::MAX.as_raw(),
+                data in vec(any::<u8>(), 0..=MAX_DATA_LENGTH),
+        ) {
+            let id = ExtendedId::new(id).expect("Logic error: proptest produced invalid standard ID");
+            let frame = Frame::new(id, &data).unwrap();
+            // https://en.wikipedia.org/wiki/CAN_bus#Bit_stuffing
+            assert!(frame.length_bound_in_bits() <= 157 + 3);
         }
     }
 }
