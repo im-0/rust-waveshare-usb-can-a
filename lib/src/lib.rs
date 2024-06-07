@@ -225,7 +225,7 @@ impl Usb2CanBuilder {
             configuration: Arc::new(Mutex::new(self.adapter_configuration.clone())),
         };
 
-        usb2can.set_configuration_inner()?;
+        usb2can.set_configuration_inner(None)?;
 
         Ok(usb2can)
     }
@@ -632,13 +632,33 @@ impl Usb2Can {
     }
 
     pub fn set_configuration(&mut self, configuration: &Usb2CanConfiguration) -> Result<()> {
-        *self.lock_configuration()? = configuration.clone();
-        self.set_configuration_inner()
+        self.set_configuration_inner(Some(configuration.clone()))
     }
 
-    fn set_configuration_inner(&mut self) -> Result<()> {
-        let mut config_message = self.lock_configuration()?.to_configuration_message();
-        self.fill_checksum_and_transmit_configuration_message(&mut config_message)
+    fn set_configuration_inner(
+        &mut self,
+        configuration: Option<Usb2CanConfiguration>,
+    ) -> Result<()> {
+        let mut receiver_guard = self.lock_receiver()?;
+        let mut transmitter_guard = self.lock_transmitter()?;
+        let mut configuration_guard = self.lock_configuration()?;
+
+        let mut config_message = if let Some(configuration) = configuration {
+            let config_message = configuration.to_configuration_message();
+            *configuration_guard = configuration;
+            config_message
+        } else {
+            configuration_guard.to_configuration_message()
+        };
+
+        receiver_guard.clear()?;
+        transmitter_guard.fill_checksum_and_transmit_message(&mut config_message)?;
+
+        // Adapter needs some time to process the configuration change.
+        receiver_guard.add_delay(CONFIGURATION_DELAY);
+        transmitter_guard.add_delay(CONFIGURATION_DELAY);
+
+        Ok(())
     }
 
     pub fn serial_baud_rate(&self) -> Result<SerialBaudRate> {
@@ -646,19 +666,20 @@ impl Usb2Can {
     }
 
     pub fn set_serial_baud_rate(&mut self, serial_baud_rate: SerialBaudRate) -> Result<()> {
+        let mut receiver_guard = self.lock_receiver()?;
+        let mut transmitter_guard = self.lock_transmitter()?;
+
         let mut config_message = serial_baud_rate.to_configuration_message();
-        self.fill_checksum_and_transmit_configuration_message(&mut config_message)?;
+        transmitter_guard.fill_checksum_and_transmit_message(&mut config_message)?;
 
         // Adapater does not respond while blinking.
         let delay = serial_baud_rate.to_blink_delay();
 
-        self.lock_receiver()?.add_delay(delay);
-
-        let mut transmitter = self.lock_transmitter()?;
-        transmitter.add_delay(delay);
+        receiver_guard.add_delay(delay);
+        transmitter_guard.add_delay(delay);
 
         // Set the new baud rate on underlying serial interface.
-        transmitter.set_serial_baud_rate(serial_baud_rate)
+        transmitter_guard.set_serial_baud_rate(serial_baud_rate)
     }
 
     pub fn frame_delay_multiplier(&self) -> Result<f64> {
@@ -670,35 +691,6 @@ impl Usb2Can {
         self.lock_transmitter().and_then(|mut transmitter| {
             transmitter.set_frame_delay_multiplier(frame_delay_multiplier)
         })
-    }
-
-    fn fill_checksum_and_transmit_configuration_message(
-        &mut self,
-        config_message: &mut [u8],
-    ) -> Result<()> {
-        Self::fill_checksum(config_message);
-
-        let mut receiver = self.lock_receiver()?;
-        let mut transmitter = self.lock_transmitter()?;
-
-        receiver.clear()?;
-        transmitter.transmit_all(config_message)?;
-
-        // Adapter needs some time to process the configuration change.
-        receiver.add_delay(CONFIGURATION_DELAY);
-        transmitter.add_delay(CONFIGURATION_DELAY);
-
-        Ok(())
-    }
-
-    fn fill_checksum(message: &mut [u8]) {
-        message[message.len() - 1] = Self::generate_checksum(message);
-    }
-
-    fn generate_checksum(message: &mut [u8]) -> u8 {
-        message[2..message.len() - 1]
-            .iter()
-            .fold(0u8, |acc, &x| acc.wrapping_add(x))
     }
 
     fn lock_configuration(&self) -> Result<MutexGuard<Usb2CanConfiguration>> {
@@ -726,16 +718,17 @@ impl blocking::Can for Usb2Can {
     type Error = Error;
 
     fn transmit(&mut self, frame: &Frame) -> Result<()> {
-        let mut transmitter = self.lock_transmitter()?;
+        let mut transmitter_guard = self.lock_transmitter()?;
+        let configuration_guard = self.lock_configuration()?;
 
-        transmitter.transmit_frame(frame)?;
+        transmitter_guard.transmit_frame(frame)?;
 
-        let delay_multipyer = transmitter.frame_delay_multiplier();
+        let delay_multipyer = transmitter_guard.frame_delay_multiplier();
         if delay_multipyer > f64::EPSILON {
-            let delay = self.lock_configuration()?.can_baud_rate.to_bit_length()
-                * frame.length_bound_in_bits();
+            let delay =
+                configuration_guard.can_baud_rate.to_bit_length() * frame.length_bound_in_bits();
             let delay = delay.mul_f64(delay_multipyer);
-            transmitter.add_delay(delay);
+            transmitter_guard.add_delay(delay);
         }
 
         Ok(())
@@ -805,6 +798,21 @@ impl Transmitter {
                 "Frame delay multiplier must be a positive finite number".into(),
             ))
         }
+    }
+
+    fn fill_checksum_and_transmit_message(&mut self, config_message: &mut [u8]) -> Result<()> {
+        Self::fill_checksum(config_message);
+        self.transmit_all(config_message)
+    }
+
+    fn fill_checksum(message: &mut [u8]) {
+        message[message.len() - 1] = Self::generate_checksum(message);
+    }
+
+    fn generate_checksum(message: &mut [u8]) -> u8 {
+        message[2..message.len() - 1]
+            .iter()
+            .fold(0u8, |acc, &x| acc.wrapping_add(x))
     }
 
     fn transmit_frame(&mut self, frame: &Frame) -> Result<()> {
