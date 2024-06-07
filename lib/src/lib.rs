@@ -172,11 +172,11 @@ impl Usb2CanBuilder {
         self
     }
 
-    pub fn open(&self) -> Result<Usb2Can> {
+    pub fn open_without_blink_delay(&self) -> Result<Usb2Can> {
         self.open_inner(false)
     }
 
-    pub fn open_with_blink_delay(&self) -> Result<Usb2Can> {
+    pub fn open(&self) -> Result<Usb2Can> {
         self.open_inner(true)
     }
 
