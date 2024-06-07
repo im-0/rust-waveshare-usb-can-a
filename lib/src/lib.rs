@@ -32,9 +32,11 @@
 use core::panic;
 use std::{
     borrow::Cow,
+    collections::VecDeque,
     fmt::{self, Display},
     io::{self, BufReader, Read},
     result,
+    sync::{Arc, Mutex, MutexGuard},
     thread::sleep,
     time::Duration,
 };
@@ -53,10 +55,48 @@ pub const BASE_ID_BITS: usize = 11;
 pub const EXTENDED_ID_BITS: usize = 29;
 pub const EXTENDED_ID_EXTRA_BITS: usize = EXTENDED_ID_BITS - BASE_ID_BITS;
 
+const MAX_FIXED_MESSAGE_SIZE: usize = 20;
+const MAX_VARIABLE_MESSAGE_SIZE: usize = 15;
+const MAX_MESSAGE_SIZE: usize = const_fn_max(MAX_FIXED_MESSAGE_SIZE, MAX_VARIABLE_MESSAGE_SIZE);
+// Should be enough to sync as leftovers of a single frame are kept in the buffers.
+const SYNC_ATTEMPTS: usize = MAX_MESSAGE_SIZE - 1;
+
+const PROTO_HEADER: u8 = 0xaa;
+const PROTO_HEADER_FIXED: u8 = 0x55;
+
+const PROTO_TYPE_CFG_SET: u8 = 0b00000010;
+const PROTO_TYPE_CFG_SET_VARIABLE: u8 = 0b00010000;
+const PROTO_TYPE_CFG_SET_SERIAL_BAUD_RATE: u8 = 0b00000100;
+
+const PROTO_CFG_MODE_FLAG_LOOPBACK: u8 = 0b00000001;
+const PROTO_CFG_MODE_FLAG_SILENT: u8 = 0b00000010;
+
+const PROTO_CFG_FRAME_NORMAL: u8 = 0x01;
+const PROTO_CFG_FRAME_EXTENDED: u8 = 0x02;
+
+const PROTO_CFG_RETRANSMISSION_ENABLED: u8 = 0x00;
+const PROTO_CFG_RETRANSMISSION_DISABLED: u8 = 0x01;
+
+const PROTO_TYPE_VARIABLE: u8 = 0b11000000;
+const PROTO_TYPE_VARIABLE_MASK: u8 = PROTO_TYPE_VARIABLE;
+
+const PROTO_TYPE_FLAG_EXTENDED: u8 = 0b00100000;
+const PROTO_TYPE_FLAG_REMOTE: u8 = 0b00010000;
+
+const PROTO_TYPE_SIZE_MASK: u8 = 0b00001111;
+
+const PROTO_END: u8 = 0x55;
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Configuration error: {0}")]
-    Configuration(String),
+    SetConfiguration(String),
+
+    #[error("Configuration reading error: {0}")]
+    GetConfiguration(String),
+
+    #[error("Locking error: {0}")]
+    Locking(String),
 
     #[error("Serial port error: {}", .0.description)]
     Serial(#[from] serialport::Error),
@@ -88,6 +128,102 @@ pub struct Usb2CanBuilder {
     path: String,
     serial_baud_rate: SerialBaudRate,
     serial_receive_timeout: Duration,
+    adapter_configuration: Usb2CanConfiguration,
+}
+
+impl Usb2CanBuilder {
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    #[must_use]
+    pub fn set_path<'a>(mut self, path: impl Into<std::borrow::Cow<'a, str>>) -> Self {
+        self.path = path.into().to_string();
+        self
+    }
+
+    pub const fn serial_baud_rate(&self) -> SerialBaudRate {
+        self.serial_baud_rate
+    }
+
+    #[must_use]
+    pub const fn set_serial_baud_rate(mut self, serial_baud_rate: SerialBaudRate) -> Self {
+        self.serial_baud_rate = serial_baud_rate;
+        self
+    }
+
+    pub const fn serial_receive_timeout(&self) -> Duration {
+        self.serial_receive_timeout
+    }
+
+    #[must_use]
+    pub const fn set_serial_receive_timeout(mut self, serial_receive_timeout: Duration) -> Self {
+        self.serial_receive_timeout = serial_receive_timeout;
+        self
+    }
+
+    pub const fn adapter_configuration(&self) -> &Usb2CanConfiguration {
+        &self.adapter_configuration
+    }
+
+    #[must_use]
+    pub const fn set_adapter_configuration(
+        mut self,
+        adapter_configuration: Usb2CanConfiguration,
+    ) -> Self {
+        self.adapter_configuration = adapter_configuration;
+        self
+    }
+
+    pub fn open(&self) -> Result<Usb2Can> {
+        self.open_inner(false)
+    }
+
+    pub fn open_with_blink_delay(&self) -> Result<Usb2Can> {
+        self.open_inner(true)
+    }
+
+    fn open_inner(&self, with_blink_delay: bool) -> Result<Usb2Can> {
+        debug!("Opening USB2CAN with configuration {:?}", self);
+
+        let serial = serialport::new(&self.path, u32::from(self.serial_baud_rate))
+            .data_bits(DataBits::Eight)
+            .stop_bits(StopBits::Two);
+        let serial = serial.open()?;
+        debug!("Serial port opened: {:?}", serial.name());
+
+        let mut receiver = Receiver::new(serial.try_clone()?);
+        receiver.set_receive_timeout(self.serial_receive_timeout)?;
+
+        let mut usb2can = Usb2Can {
+            receiver: Arc::new(Mutex::new(receiver)),
+            transmitter: Arc::new(Mutex::new(Transmitter::new(serial))),
+            configuration: Arc::new(Mutex::new(self.adapter_configuration.clone())),
+        };
+
+        if with_blink_delay {
+            self.serial_baud_rate.sleep_while_blinking();
+        }
+        usb2can.set_configuration_inner()?;
+
+        Ok(usb2can)
+    }
+}
+
+pub fn new<'a>(
+    path: impl Into<Cow<'a, str>>,
+    adapter_configuration: &Usb2CanConfiguration,
+) -> Usb2CanBuilder {
+    Usb2CanBuilder {
+        path: path.into().into_owned(),
+        serial_baud_rate: DEFAULT_SERIAL_BAUD_RATE,
+        serial_receive_timeout: DEFAULT_SERIAL_RECEIVE_TIMEOUT,
+        adapter_configuration: adapter_configuration.clone(),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Usb2CanConfiguration {
     can_baud_rate: CanBaudRate,
     receive_only_extended_frames: bool,
     filter: Id,
@@ -97,41 +233,47 @@ pub struct Usb2CanBuilder {
     automatic_retransmission: bool,
 }
 
-impl Usb2CanBuilder {
-    #[must_use]
-    pub fn path<'a>(mut self, path: impl Into<std::borrow::Cow<'a, str>>) -> Self {
-        self.path = path.into().to_string();
-        self
+impl Usb2CanConfiguration {
+    pub fn new(can_baud_rate: CanBaudRate) -> Self {
+        Self {
+            can_baud_rate,
+            receive_only_extended_frames: false,
+            filter: ExtendedId::ZERO.into(),
+            mask: ExtendedId::ZERO.into(),
+            loopback: false,
+            silent: false,
+            automatic_retransmission: true,
+        }
+    }
+
+    pub const fn can_baud_rate(&self) -> CanBaudRate {
+        self.can_baud_rate
     }
 
     #[must_use]
-    pub const fn serial_baud_rate(mut self, serial_baud_rate: SerialBaudRate) -> Self {
-        self.serial_baud_rate = serial_baud_rate;
-        self
-    }
-
-    #[must_use]
-    pub const fn serial_receive_timeout(mut self, serial_receive_timeout: Duration) -> Self {
-        self.serial_receive_timeout = serial_receive_timeout;
-        self
-    }
-
-    #[must_use]
-    pub const fn can_baud_rate(mut self, can_baud_rate: CanBaudRate) -> Self {
+    pub const fn set_can_baud_rate(mut self, can_baud_rate: CanBaudRate) -> Self {
         self.can_baud_rate = can_baud_rate;
         self
     }
 
+    pub const fn receive_only_extended_frames(&self) -> bool {
+        self.receive_only_extended_frames
+    }
+
     #[must_use]
-    pub const fn receive_only_extended_frames(mut self, extended_frame: bool) -> Self {
+    pub const fn set_receive_only_extended_frames(mut self, extended_frame: bool) -> Self {
         self.receive_only_extended_frames = extended_frame;
         self
     }
 
-    pub fn filter(mut self, filter: Id, mask: Id) -> Result<Self> {
+    pub const fn filter(&self) -> (Id, Id) {
+        (self.filter, self.mask)
+    }
+
+    pub fn set_filter(mut self, filter: Id, mask: Id) -> Result<Self> {
         match (&filter, &mask) {
             (Id::Standard(_), Id::Extended(_)) | (Id::Extended(_), Id::Standard(_)) => {
-                return Err(Error::Configuration(
+                return Err(Error::SetConfiguration(
                     "Filter and mask must have the same type (standard or extended)".into(),
                 ));
             }
@@ -143,58 +285,89 @@ impl Usb2CanBuilder {
         Ok(self)
     }
 
+    pub const fn loopback(&self) -> bool {
+        self.loopback
+    }
+
     #[must_use]
-    pub const fn loopback(mut self, loopback: bool) -> Self {
+    pub const fn set_loopback(mut self, loopback: bool) -> Self {
         self.loopback = loopback;
         self
     }
 
+    pub const fn silent(&self) -> bool {
+        self.silent
+    }
+
     #[must_use]
-    pub const fn silent(mut self, silent: bool) -> Self {
+    pub const fn set_silent(mut self, silent: bool) -> Self {
         self.silent = silent;
         self
     }
 
+    pub const fn automatic_retransmission(&self) -> bool {
+        self.automatic_retransmission
+    }
+
     #[must_use]
-    pub const fn automatic_retransmission(mut self, automatic_retransmission: bool) -> Self {
+    pub const fn set_automatic_retransmission(mut self, automatic_retransmission: bool) -> Self {
         self.automatic_retransmission = automatic_retransmission;
         self
     }
 
-    pub fn open(self) -> Result<Usb2Can> {
-        debug!("Opening USB2CAN with configuration {:?}", self);
+    fn to_configuration_message(&self) -> [u8; MAX_FIXED_MESSAGE_SIZE] {
+        let filter = id_to_bytes(self.filter);
+        let mask = id_to_bytes(self.mask);
 
-        let serial = serialport::new(&self.path, u32::from(self.serial_baud_rate))
-            .data_bits(DataBits::Eight)
-            .stop_bits(StopBits::Two)
-            .timeout(self.serial_receive_timeout);
-        let serial = serial.open()?;
-        debug!("Serial port opened: {:?}", serial.name());
-
-        let mut usb2can = Usb2Can {
-            can_baud_rate: self.can_baud_rate,
-            serial,
-            read_buffer: None,
-            tried_to_initialize_read_buffer: false,
-            sync_attempts_left: SYNC_ATTEMPTS,
-        };
-        usb2can.configure(&self)?;
-        Ok(usb2can)
-    }
-}
-
-pub fn new<'a>(path: impl Into<Cow<'a, str>>, can_baud_rate: CanBaudRate) -> Usb2CanBuilder {
-    Usb2CanBuilder {
-        path: path.into().into_owned(),
-        serial_baud_rate: DEFAULT_SERIAL_BAUD_RATE,
-        serial_receive_timeout: DEFAULT_SERIAL_RECEIVE_TIMEOUT,
-        can_baud_rate,
-        receive_only_extended_frames: false,
-        filter: ExtendedId::ZERO.into(),
-        mask: ExtendedId::ZERO.into(),
-        loopback: false,
-        silent: false,
-        automatic_retransmission: true,
+        [
+            // Header
+            PROTO_HEADER,
+            PROTO_HEADER_FIXED,
+            // Use variable length protocol to send and receive data
+            // TODO: Make configurable.
+            PROTO_TYPE_CFG_SET | PROTO_TYPE_CFG_SET_VARIABLE,
+            // CAN bus speed
+            self.can_baud_rate.to_config_value(),
+            // Frame type
+            if self.receive_only_extended_frames {
+                PROTO_CFG_FRAME_EXTENDED
+            } else {
+                PROTO_CFG_FRAME_NORMAL
+            },
+            // Filter
+            filter[0],
+            filter[1],
+            filter[2],
+            filter[3],
+            // Mask
+            mask[0],
+            mask[1],
+            mask[2],
+            mask[3],
+            // CAN adapter mode
+            if self.loopback {
+                PROTO_CFG_MODE_FLAG_LOOPBACK
+            } else {
+                0x00
+            } | if self.silent {
+                PROTO_CFG_MODE_FLAG_SILENT
+            } else {
+                0x00
+            },
+            // Automatic retransmission
+            if self.automatic_retransmission {
+                PROTO_CFG_RETRANSMISSION_ENABLED
+            } else {
+                PROTO_CFG_RETRANSMISSION_DISABLED
+            },
+            // Reserved
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            // Checksum (will be filled in later)
+            0x00,
+        ]
     }
 }
 
@@ -211,15 +384,13 @@ pub enum SerialBaudRate {
 impl SerialBaudRate {
     const BLINK_DELAY: Duration = Duration::from_millis(700);
 
-    const fn to_config_value(self) -> u8 {
-        match self {
-            Self::R9600Bd => 0x05,
-            Self::R19200Bd => 0x04,
-            Self::R38400Bd => 0x03,
-            Self::R115200Bd => 0x02,
-            Self::R1228800Bd => 0x01,
-            Self::R2000000Bd => 0x00,
-        }
+    fn sleep_while_blinking(self) {
+        let blink_delay = self.to_blink_delay();
+        debug!(
+            "Waiting {:.03}s while adapter is blinking",
+            blink_delay.as_secs_f64()
+        );
+        sleep(blink_delay);
     }
 
     fn to_blink_delay(self) -> Duration {
@@ -233,6 +404,47 @@ impl SerialBaudRate {
         };
 
         Self::BLINK_DELAY * blinks
+    }
+
+    const fn to_configuration_message(self) -> [u8; MAX_FIXED_MESSAGE_SIZE] {
+        [
+            // Header
+            PROTO_HEADER,
+            PROTO_HEADER_FIXED,
+            // Set serial baud rate
+            PROTO_TYPE_CFG_SET | PROTO_TYPE_CFG_SET_SERIAL_BAUD_RATE,
+            // Serial baud rate
+            self.to_config_value(),
+            // Reserved
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            // Checksum (will be filled in later)
+            0x00,
+        ]
+    }
+
+    const fn to_config_value(self) -> u8 {
+        match self {
+            Self::R9600Bd => 0x05,
+            Self::R19200Bd => 0x04,
+            Self::R38400Bd => 0x03,
+            Self::R115200Bd => 0x02,
+            Self::R1228800Bd => 0x01,
+            Self::R2000000Bd => 0x00,
+        }
     }
 }
 
@@ -253,7 +465,7 @@ impl TryFrom<u32> for SerialBaudRate {
             115_200 => Ok(Self::R115200Bd),
             1_228_800 => Ok(Self::R1228800Bd),
             2_000_000 => Ok(Self::R2000000Bd),
-            _ => Err(Error::Configuration(format!(
+            _ => Err(Error::SetConfiguration(format!(
                 "Unsupported serial baud rate value: {}",
                 value
             ))),
@@ -346,7 +558,7 @@ impl TryFrom<u32> for CanBaudRate {
             500_000 => Ok(Self::R500kBd),
             800_000 => Ok(Self::R800kBd),
             1_000_000 => Ok(Self::R1000kBd),
-            _ => Err(Error::Configuration(format!(
+            _ => Err(Error::SetConfiguration(format!(
                 "Unsupported CAN baud rate value: {}",
                 value
             ))),
@@ -373,186 +585,63 @@ impl From<CanBaudRate> for u32 {
     }
 }
 
-const MAX_FIXED_MESSAGE_SIZE: usize = 20;
-const MAX_VARIABLE_MESSAGE_SIZE: usize = 15;
-// Should be enough to sync if leftovers of a single frame are left somewhere in the buffers.
-const SYNC_ATTEMPTS: usize = const_fn_max(MAX_FIXED_MESSAGE_SIZE, MAX_VARIABLE_MESSAGE_SIZE) - 1;
-
-const PROTO_HEADER: u8 = 0xaa;
-const PROTO_HEADER_FIXED: u8 = 0x55;
-
-const PROTO_TYPE_CFG_SET: u8 = 0b00000010;
-const PROTO_TYPE_CFG_SET_VARIABLE: u8 = 0b00010000;
-const PROTO_TYPE_CFG_SET_SERIAL_BAUD_RATE: u8 = 0b00000100;
-
-const PROTO_CFG_MODE_FLAG_LOOPBACK: u8 = 0b00000001;
-const PROTO_CFG_MODE_FLAG_SILENT: u8 = 0b00000010;
-
-const PROTO_CFG_FRAME_NORMAL: u8 = 0x01;
-const PROTO_CFG_FRAME_EXTENDED: u8 = 0x02;
-
-const PROTO_CFG_RETRANSMISSION_ENABLED: u8 = 0x00;
-const PROTO_CFG_RETRANSMISSION_DISABLED: u8 = 0x01;
-
-const PROTO_TYPE_VARIABLE: u8 = 0b11000000;
-const PROTO_TYPE_VARIABLE_MASK: u8 = PROTO_TYPE_VARIABLE;
-
-const PROTO_TYPE_FLAG_EXTENDED: u8 = 0b00100000;
-const PROTO_TYPE_FLAG_REMOTE: u8 = 0b00010000;
-
-const PROTO_TYPE_SIZE_MASK: u8 = 0b00001111;
-
-const PROTO_END: u8 = 0x55;
-
 const fn const_fn_max(a: usize, b: usize) -> usize {
     [a, b][(a < b) as usize]
 }
 
+#[derive(Clone)]
 pub struct Usb2Can {
-    can_baud_rate: CanBaudRate,
-    serial: Box<dyn SerialPort>,
-    read_buffer: Option<BufReader<Box<dyn SerialPort>>>,
-    tried_to_initialize_read_buffer: bool,
-    sync_attempts_left: usize,
+    receiver: Arc<Mutex<Receiver>>,
+    transmitter: Arc<Mutex<Transmitter>>,
+    configuration: Arc<Mutex<Usb2CanConfiguration>>,
 }
 
 impl Usb2Can {
     const CONFIGURATION_DELAY: Duration = Duration::from_millis(100);
 
-    pub fn name(&self) -> Option<String> {
-        self.serial.name()
+    pub fn name(&self) -> Result<Option<String>> {
+        self.lock_transmitter()
+            .map(|transmitter| transmitter.name())
     }
 
-    pub const fn can_baud_rate(&self) -> CanBaudRate {
-        self.can_baud_rate
-    }
-
-    pub fn serial_receive_timeout(&self) -> Duration {
-        self.serial.timeout()
+    pub fn serial_receive_timeout(&self) -> Result<Duration> {
+        self.lock_receiver()
+            .map(|receiver| receiver.receive_timeout())
     }
 
     pub fn set_serial_receive_timeout(&mut self, timeout: Duration) -> Result<()> {
-        self.serial.set_timeout(timeout).map_err(|error| {
-            Error::Configuration(format!("Failed to set serial receive timeout: {}", error))
-        })
+        self.lock_receiver()
+            .and_then(|mut receiver| receiver.set_receive_timeout(timeout))
     }
 
-    fn configure(&mut self, configuration: &Usb2CanBuilder) -> Result<()> {
-        let filter = id_to_bytes(configuration.filter);
-        let mask = id_to_bytes(configuration.mask);
+    pub fn configuration(&self) -> Result<Usb2CanConfiguration> {
+        Ok(self.lock_configuration()?.clone())
+    }
 
-        let mut config_message: [u8; MAX_FIXED_MESSAGE_SIZE] = [
-            // Header
-            PROTO_HEADER,
-            PROTO_HEADER_FIXED,
-            // Use variable length protocol to send and receive data
-            // TODO: Make configurable.
-            PROTO_TYPE_CFG_SET | PROTO_TYPE_CFG_SET_VARIABLE,
-            // CAN bus speed
-            configuration.can_baud_rate.to_config_value(),
-            // Frame type
-            if configuration.receive_only_extended_frames {
-                PROTO_CFG_FRAME_EXTENDED
-            } else {
-                PROTO_CFG_FRAME_NORMAL
-            },
-            // Filter
-            filter[0],
-            filter[1],
-            filter[2],
-            filter[3],
-            // Mask
-            mask[0],
-            mask[1],
-            mask[2],
-            mask[3],
-            // CAN adapter mode
-            if configuration.loopback {
-                PROTO_CFG_MODE_FLAG_LOOPBACK
-            } else {
-                0x00
-            } | if configuration.silent {
-                PROTO_CFG_MODE_FLAG_SILENT
-            } else {
-                0x00
-            },
-            // Automatic retransmission
-            if configuration.automatic_retransmission {
-                PROTO_CFG_RETRANSMISSION_ENABLED
-            } else {
-                PROTO_CFG_RETRANSMISSION_DISABLED
-            },
-            // Reserved
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            // Checksum (will be filled in later)
-            0x00,
-        ];
+    pub fn set_configuration(&mut self, configuration: &Usb2CanConfiguration) -> Result<()> {
+        *self.lock_configuration()? = configuration.clone();
+        self.set_configuration_inner()
+    }
+
+    fn set_configuration_inner(&mut self) -> Result<()> {
+        let mut config_message = self.lock_configuration()?.to_configuration_message();
         self.fill_checksum_and_transmit_configuration_message(&mut config_message)
     }
 
     pub fn serial_baud_rate(&self) -> Result<SerialBaudRate> {
-        self.serial
-            .baud_rate()
-            .map_err(|error| {
-                Error::Configuration(format!("Failed to get serial baud rate: {}", error))
-            })
-            .and_then(|value| {
-                SerialBaudRate::try_from(value).map_err(|error| {
-                    Error::Configuration(format!(
-                        "Unsupported baud rate on underlying serial interface: {}",
-                        error
-                    ))
-                })
-            })
+        self.lock_transmitter()?.serial_baud_rate()
     }
 
     pub fn set_serial_baud_rate(&mut self, serial_baud_rate: SerialBaudRate) -> Result<()> {
-        let mut config_message: [u8; MAX_FIXED_MESSAGE_SIZE] = [
-            // Header
-            PROTO_HEADER,
-            PROTO_HEADER_FIXED,
-            // Set serial baud rate
-            PROTO_TYPE_CFG_SET | PROTO_TYPE_CFG_SET_SERIAL_BAUD_RATE,
-            // Serial baud rate
-            serial_baud_rate.to_config_value(),
-            // Reserved
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            // Checksum (will be filled in later)
-            0x00,
-        ];
+        let mut config_message = serial_baud_rate.to_configuration_message();
         self.fill_checksum_and_transmit_configuration_message(&mut config_message)?;
 
         // Adapater does not respond while blinking.
-        let blink_delay = serial_baud_rate.to_blink_delay();
-        debug!(
-            "Waiting {}s while adapter is blinking",
-            blink_delay.as_secs_f64()
-        );
-        sleep(blink_delay);
+        serial_baud_rate.sleep_while_blinking();
 
         // Set the new baud rate on underlying serial interface.
-        self.serial
-            .set_baud_rate(u32::from(serial_baud_rate))
-            .map_err(|error| {
-                Error::Configuration(format!("Failed to set serial baud rate: {}", error))
-            })
+        self.lock_transmitter()?
+            .set_serial_baud_rate(serial_baud_rate)
     }
 
     fn fill_checksum_and_transmit_configuration_message(
@@ -561,8 +650,8 @@ impl Usb2Can {
     ) -> Result<()> {
         Self::fill_checksum(config_message);
 
-        self.serial.clear(ClearBuffer::All)?;
-        self.serial_write(config_message)?;
+        self.lock_receiver()?.clear()?;
+        self.lock_transmitter()?.transmit_all(config_message)?;
 
         // Adapter needs some time to process the configuration change.
         debug!(
@@ -584,61 +673,22 @@ impl Usb2Can {
             .fold(0u8, |acc, &x| acc.wrapping_add(x))
     }
 
-    fn serial_write(&mut self, message: &[u8]) -> Result<()> {
-        trace!("Writing into serial: {:?}", message);
-        self.serial.write_all(message)?;
-        self.serial.flush()?;
-        Ok(())
+    fn lock_configuration(&self) -> Result<MutexGuard<Usb2CanConfiguration>> {
+        self.configuration
+            .lock()
+            .map_err(|error| Error::Locking(format!("{} (configuration)", error)))
     }
 
-    fn serial_read_byte(&mut self) -> Result<u8> {
-        if !self.tried_to_initialize_read_buffer {
-            self.read_buffer = self
-                .serial
-                .try_clone()
-                .map_err(|error| debug!("No read buffer, failed to clone serial port: {}", error))
-                .map(BufReader::new)
-                .ok();
-            self.tried_to_initialize_read_buffer = true;
-        }
-
-        let mut byte = [0];
-        if let Some(read_buffer) = &mut self.read_buffer {
-            read_buffer.read_exact(&mut byte)
-        } else {
-            self.serial.read_exact(&mut byte)
-        }
-        .map_err(|error| {
-            if error.kind() == io::ErrorKind::TimedOut {
-                Error::SerialReadTimedOut
-            } else {
-                Error::from(error)
-            }
-        })?;
-
-        trace!("Byte read from serial: {}", byte[0]);
-        Ok(byte[0])
+    fn lock_transmitter(&self) -> Result<MutexGuard<Transmitter>> {
+        self.transmitter
+            .lock()
+            .map_err(|error| Error::Locking(format!("{} (transmitter)", error)))
     }
 
-    fn receive_inner(&mut self) -> Result<Frame> {
-        ReceiverState::read_frame(&mut || self.serial_read_byte())
-    }
-
-    pub fn try_clone(&self) -> Result<Self> {
-        let serial = self.serial.try_clone()?;
-
-        Ok(Self {
-            can_baud_rate: self.can_baud_rate,
-            serial,
-            read_buffer: None,
-            tried_to_initialize_read_buffer: false,
-
-            sync_attempts_left: if self.sync_attempts_left == SYNC_ATTEMPTS {
-                SYNC_ATTEMPTS
-            } else {
-                0
-            },
-        })
+    fn lock_receiver(&self) -> Result<MutexGuard<Receiver>> {
+        self.receiver
+            .lock()
+            .map_err(|error| Error::Locking(format!("{} (receiver)", error)))
     }
 }
 
@@ -648,31 +698,118 @@ impl blocking::Can for Usb2Can {
     type Error = Error;
 
     fn transmit(&mut self, frame: &Frame) -> Result<()> {
-        trace!("Transmitting frame: {:?}", frame);
-        self.serial_write(&frame.to_message())
+        self.lock_transmitter()?.transmit_frame(frame)
     }
 
     fn receive(&mut self) -> Result<Self::Frame> {
+        self.lock_receiver()?.receive_frame()
+    }
+}
+
+struct Transmitter {
+    serial: Box<dyn SerialPort>,
+}
+
+impl Transmitter {
+    fn new(serial: Box<dyn SerialPort>) -> Self {
+        Self { serial }
+    }
+
+    fn name(&self) -> Option<String> {
+        self.serial.name()
+    }
+
+    fn serial_baud_rate(&self) -> Result<SerialBaudRate> {
+        self.serial
+            .baud_rate()
+            .map_err(|error| {
+                Error::GetConfiguration(format!("Failed to get serial baud rate: {}", error))
+            })
+            .and_then(|value| {
+                SerialBaudRate::try_from(value).map_err(|error| {
+                    Error::GetConfiguration(format!(
+                        "Unsupported baud rate on underlying serial interface: {}",
+                        error
+                    ))
+                })
+            })
+    }
+
+    fn set_serial_baud_rate(&mut self, serial_baud_rate: SerialBaudRate) -> Result<()> {
+        self.serial
+            .set_baud_rate(u32::from(serial_baud_rate))
+            .map_err(|error| {
+                Error::SetConfiguration(format!("Failed to set serial baud rate: {}", error))
+            })
+    }
+
+    fn transmit_frame(&mut self, frame: &Frame) -> Result<()> {
+        trace!("Transmitting frame: {:?}", frame);
+        self.transmit_all(&frame.to_message())
+    }
+
+    fn transmit_all(&mut self, message: &[u8]) -> Result<()> {
+        trace!("Writing into serial: {:?}", message);
+        self.serial.write_all(message)?;
+        self.serial.flush()?;
+        Ok(())
+    }
+}
+
+struct Receiver {
+    read_buffer: BufReader<Box<dyn SerialPort>>,
+    leftover: VecDeque<u8>,
+    sync_attempts_left: usize,
+}
+
+impl Receiver {
+    fn new(serial: Box<dyn SerialPort>) -> Self {
+        Self {
+            read_buffer: BufReader::new(serial),
+            leftover: VecDeque::with_capacity(MAX_MESSAGE_SIZE),
+            sync_attempts_left: SYNC_ATTEMPTS,
+        }
+    }
+
+    fn receive_timeout(&self) -> Duration {
+        self.read_buffer.get_ref().timeout()
+    }
+
+    fn set_receive_timeout(&mut self, timeout: Duration) -> Result<()> {
+        self.read_buffer
+            .get_mut()
+            .set_timeout(timeout)
+            .map_err(|error| {
+                Error::SetConfiguration(format!("Failed to set receive timeout: {}", error))
+            })
+    }
+
+    fn receive_frame(&mut self) -> Result<Frame> {
         if self.sync_attempts_left == 0 {
-            self.receive_inner()
+            self.receive_frame_no_sync()
         } else {
             loop {
-                match self.receive_inner() {
+                match self.receive_frame_no_sync() {
                     Ok(frame) => {
                         self.sync_attempts_left = 0;
                         break Ok(frame);
                     }
 
                     error @ Err(Error::SerialReadTimedOut) => break error,
-                    Err(error) => debug!("Failed to sync: {}", error),
-                }
 
-                if self.sync_attempts_left == 0 {
-                    break Err(Error::RecvUnexpected(
-                        "Failed to sync, no attempts left".into(),
-                    ));
+                    Err(error) => {
+                        debug!("Failed to sync: {}", error);
+
+                        if self.sync_attempts_left == 0 {
+                            break Err(Error::RecvUnexpected(format!(
+                                "Failed to sync, no attempts left: {}",
+                                error,
+                            )));
+                        }
+
+                        self.sync_attempts_left -= 1;
+                    }
                 }
-                self.sync_attempts_left -= 1;
             }
         }
         .map(|frame| {
@@ -680,9 +817,60 @@ impl blocking::Can for Usb2Can {
             frame
         })
     }
+
+    fn receive_frame_no_sync(&mut self) -> Result<Frame> {
+        let mut received_bytes = Vec::with_capacity(MAX_MESSAGE_SIZE);
+
+        let result = FrameReceiveState::read_frame(&mut || {
+            self.receive_byte().map(|byte| {
+                received_bytes.push(byte);
+                byte
+            })
+        });
+
+        if result.is_err() && !received_bytes.is_empty() {
+            self.push_back_unused_bytes(&received_bytes[1..]);
+        }
+
+        result
+    }
+
+    fn receive_byte(&mut self) -> Result<u8> {
+        if self.leftover.is_empty() {
+            let mut byte = [0];
+            self.read_buffer.read_exact(&mut byte).map_err(|error| {
+                if error.kind() == io::ErrorKind::TimedOut {
+                    Error::SerialReadTimedOut
+                } else {
+                    Error::from(error)
+                }
+            })?;
+
+            trace!("Byte read from serial: {}", byte[0]);
+            Ok(byte[0])
+        } else {
+            let byte = self
+                .leftover
+                .pop_front()
+                .expect("Logic error: leftover is empty");
+            trace!("Reusing leftover byte: {}", byte);
+            Ok(byte)
+        }
+    }
+
+    fn push_back_unused_bytes(&mut self, bytes: &[u8]) {
+        self.leftover.extend(bytes);
+    }
+
+    fn clear(&mut self) -> Result<()> {
+        self.read_buffer.get_mut().clear(ClearBuffer::All)?;
+        self.leftover.clear();
+        self.sync_attempts_left = SYNC_ATTEMPTS;
+        Ok(())
+    }
 }
 
-enum ReceiverState {
+enum FrameReceiveState {
     EndOrHeader,
     Header,
     Type,
@@ -692,7 +880,7 @@ enum ReceiverState {
     Finished(Frame),
 }
 
-impl ReceiverState {
+impl FrameReceiveState {
     fn read_frame(read_byte: &mut impl FnMut() -> Result<u8>) -> Result<Frame> {
         let mut state = Self::EndOrHeader;
 
@@ -1064,13 +1252,13 @@ mod tests {
 
     #[test]
     fn invalid_filter_conf() {
-        let builder = new("/dev/ttyUSB123", CanBaudRate::R1000kBd);
-        let builder = builder.filter(StandardId::ZERO.into(), ExtendedId::ZERO.into());
-        assert!(matches!(builder, Err(Error::Configuration(_))));
+        let conf = Usb2CanConfiguration::new(CanBaudRate::R1000kBd);
+        let conf = conf.set_filter(StandardId::ZERO.into(), ExtendedId::ZERO.into());
+        assert!(matches!(conf, Err(Error::SetConfiguration(_))));
 
-        let builder = new("/dev/ttyUSB123", CanBaudRate::R1000kBd);
-        let builder = builder.filter(ExtendedId::ZERO.into(), StandardId::ZERO.into());
-        assert!(matches!(builder, Err(Error::Configuration(_))));
+        let conf = Usb2CanConfiguration::new(CanBaudRate::R1000kBd);
+        let conf = conf.set_filter(ExtendedId::ZERO.into(), StandardId::ZERO.into());
+        assert!(matches!(conf, Err(Error::SetConfiguration(_))));
     }
 
     #[test]
@@ -1357,7 +1545,7 @@ mod tests {
         let message = frame.to_message();
         let mut reader_fn = into_reader_fn(message);
 
-        let received_frame = ReceiverState::read_frame(&mut reader_fn).unwrap();
+        let received_frame = FrameReceiveState::read_frame(&mut reader_fn).unwrap();
 
         assert_eq!(reader_fn().unwrap(), PROTO_END);
         assert!(reader_fn().is_err());

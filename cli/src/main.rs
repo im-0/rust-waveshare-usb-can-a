@@ -39,7 +39,8 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 use waveshare_usb_can_a::{
-    CanBaudRate, Frame, SerialBaudRate, Usb2Can, DEFAULT_SERIAL_BAUD_RATE, EXTENDED_ID_EXTRA_BITS,
+    CanBaudRate, Frame, SerialBaudRate, Usb2Can, Usb2CanConfiguration, DEFAULT_SERIAL_BAUD_RATE,
+    EXTENDED_ID_EXTRA_BITS,
 };
 
 mod cli;
@@ -78,18 +79,20 @@ fn run_dump(args: &cli::Cli, options: &cli::DumpOptions) -> Result<()> {
     );
 
     // Open USB2CAN adapter.
-    let usb2can = waveshare_usb_can_a::new(&args.serial_path, options.can_baud_rate)
-        .serial_baud_rate(options.serial_baud_rate)
-        .serial_receive_timeout(options.receive_timeout)
-        .receive_only_extended_frames(options.receive_only_extended_frames);
+    let usb2can_conf = Usb2CanConfiguration::new(options.can_baud_rate)
+        .set_receive_only_extended_frames(options.receive_only_extended_frames);
 
-    let usb2can = if let Some(filter_with_mask) = &options.filter_with_mask {
-        usb2can.filter(filter_with_mask.filter, filter_with_mask.mask)?
+    let usb2can_conf = if let Some(filter_with_mask) = &options.filter_with_mask {
+        usb2can_conf.set_filter(filter_with_mask.filter, filter_with_mask.mask)?
     } else {
-        usb2can
+        usb2can_conf
     };
 
-    let mut usb2can = usb2can.open().context("Failed to open USB2CAN device")?;
+    let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
+        .set_serial_baud_rate(options.serial_baud_rate)
+        .set_serial_receive_timeout(options.receive_timeout)
+        .open()
+        .context("Failed to open USB2CAN device")?;
 
     // Prepare mask.
     let mask = options.unique.as_ref().map(get_hashable_id_and_data);
@@ -152,9 +155,11 @@ fn run_inject(args: &cli::Cli, options: &cli::InjectOptions) -> Result<()> {
     );
 
     // Open USB2CAN adapter.
-    let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, options.can_baud_rate)
-        .serial_baud_rate(options.serial_baud_rate)
-        .automatic_retransmission(options.automatic_retransmission)
+    let usb2can_conf = Usb2CanConfiguration::new(options.can_baud_rate)
+        .set_automatic_retransmission(options.automatic_retransmission);
+
+    let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
+        .set_serial_baud_rate(options.serial_baud_rate)
         .open()
         .context("Failed to open USB2CAN device")?;
 
@@ -184,10 +189,12 @@ fn run_perf(args: &cli::Cli, options: &cli::PerfOptions) -> Result<()> {
     );
 
     // Open USB2CAN adapter.
-    let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, options.can_baud_rate)
-        .serial_baud_rate(options.serial_baud_rate)
-        .serial_receive_timeout(options.receive_timeout)
-        .automatic_retransmission(false)
+    let usb2can_conf =
+        Usb2CanConfiguration::new(options.can_baud_rate).set_automatic_retransmission(false);
+
+    let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
+        .set_serial_baud_rate(options.serial_baud_rate)
+        .set_serial_receive_timeout(options.receive_timeout)
         .open()
         .context("Failed to open USB2CAN device")?;
 
@@ -312,10 +319,13 @@ fn run_set_serial_baud_rate(
     );
 
     // Open USB2CAN adapter.
-    let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, CanBaudRate::R5kBd)
-        .serial_baud_rate(options.old_serial_baud_rate)
-        .open()
-        .context("Failed to open USB2CAN device")?;
+    let mut usb2can = waveshare_usb_can_a::new(
+        &args.serial_path,
+        &Usb2CanConfiguration::new(CanBaudRate::R5kBd),
+    )
+    .set_serial_baud_rate(options.old_serial_baud_rate)
+    .open()
+    .context("Failed to open USB2CAN device")?;
 
     info!(
         "Changing serial baud rate to {}...",
@@ -345,17 +355,17 @@ fn run_reset_to_factory_defaults(args: &cli::Cli) -> Result<()> {
         );
 
         // Open USB2CAN adapter.
-        let mut usb2can_a = waveshare_usb_can_a::new(&args.serial_path, CanBaudRate::R5kBd)
-            .serial_receive_timeout(ADAPTER_PROBE_TIMEOUT)
-            .serial_baud_rate(serial_baud_rate)
-            .loopback(true)
-            .silent(true)
+        let usb2can_conf = Usb2CanConfiguration::new(CanBaudRate::R5kBd)
+            .set_loopback(true)
+            .set_silent(true);
+
+        let mut usb2can_a = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
+            .set_serial_receive_timeout(ADAPTER_PROBE_TIMEOUT)
+            .set_serial_baud_rate(serial_baud_rate)
             .open()
             .context("Failed to open USB2CAN device")?;
 
-        let mut usb2can_b = usb2can_a
-            .try_clone()
-            .context("Failed to clone USB2CAN device for separate handle")?;
+        let mut usb2can_b = usb2can_a.clone();
 
         let frame = Frame::new_remote(StandardId::MAX, 0).expect("Logic error: bad test frame");
         if check_echo(&mut usb2can_b, &mut usb2can_a, &frame, 1).is_ok() {
@@ -459,22 +469,22 @@ fn self_test_can_rates_frame_types_and_filtering(
                 };
 
                 // Open USB2CAN adapter.
-                let mut usb2can_a = waveshare_usb_can_a::new(&args.serial_path, can_baud_rate)
-                    .filter(filter, mask)?
-                    .serial_baud_rate(options.first_serial_baud_rate)
-                    .serial_receive_timeout(options.receive_timeout)
-                    .loopback(options.second_serial_path.is_none())
-                    .silent(options.second_serial_path.is_none() && !options.send_frames)
-                    .automatic_retransmission(false)
+                let usb2can_conf = Usb2CanConfiguration::new(can_baud_rate)
+                    .set_filter(filter, mask)?
+                    .set_loopback(options.second_serial_path.is_none())
+                    .set_silent(options.second_serial_path.is_none() && !options.send_frames)
+                    .set_automatic_retransmission(false);
+
+                let mut usb2can_a = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
+                    .set_serial_baud_rate(options.first_serial_baud_rate)
+                    .set_serial_receive_timeout(options.receive_timeout)
                     .open()
                     .context("Failed to open USB2CAN device")?;
 
                 if let Some(ref second_serial_path) = options.second_serial_path {
-                    let mut usb2can_b = waveshare_usb_can_a::new(second_serial_path, can_baud_rate)
-                        .filter(filter, mask)?
-                        .serial_baud_rate(options.second_serial_baud_rate)
-                        .serial_receive_timeout(options.receive_timeout)
-                        .automatic_retransmission(false)
+                    let mut usb2can_b = waveshare_usb_can_a::new(second_serial_path, &usb2can_conf)
+                        .set_serial_baud_rate(options.second_serial_baud_rate)
+                        .set_serial_receive_timeout(options.receive_timeout)
                         .open()
                         .context("Failed to open second USB2CAN device")?;
 
@@ -496,9 +506,7 @@ fn self_test_can_rates_frame_types_and_filtering(
                     );
                     self_test_one_way(&mut usb2can_a, &mut usb2can_b, filtering, extended_frame)?;
                 } else {
-                    let mut usb2can_b = usb2can_a
-                        .try_clone()
-                        .context("Failed to clone USB2CAN device for separate handle")?;
+                    let mut usb2can_b = usb2can_a.clone();
 
                     self_test_one_way(&mut usb2can_b, &mut usb2can_a, filtering, extended_frame)?;
                 };
@@ -513,26 +521,25 @@ fn self_test_serial_rates(args: &cli::Cli, options: &cli::SelfTestOptions) -> Re
     info!("Testing all supported serial baud rates...");
 
     // Open USB2CAN adapter.
-    let mut usb2can_a = waveshare_usb_can_a::new(&args.serial_path, CanBaudRate::R5kBd)
-        .serial_baud_rate(options.first_serial_baud_rate)
-        .serial_receive_timeout(options.receive_timeout)
-        .loopback(options.second_serial_path.is_none())
-        .silent(options.second_serial_path.is_none() && !options.send_frames)
-        .automatic_retransmission(false)
+    let usb2can_conf = Usb2CanConfiguration::new(CanBaudRate::R5kBd)
+        .set_loopback(options.second_serial_path.is_none())
+        .set_silent(options.second_serial_path.is_none() && !options.send_frames)
+        .set_automatic_retransmission(false);
+
+    let mut usb2can_a = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
+        .set_serial_baud_rate(options.first_serial_baud_rate)
+        .set_serial_receive_timeout(options.receive_timeout)
         .open()
         .context("Failed to open USB2CAN device")?;
 
     let mut usb2can_b = if let Some(ref second_serial_path) = options.second_serial_path {
-        waveshare_usb_can_a::new(second_serial_path, CanBaudRate::R5kBd)
-            .serial_baud_rate(options.second_serial_baud_rate)
-            .serial_receive_timeout(options.receive_timeout)
-            .automatic_retransmission(false)
+        waveshare_usb_can_a::new(second_serial_path, &usb2can_conf)
+            .set_serial_baud_rate(options.second_serial_baud_rate)
+            .set_serial_receive_timeout(options.receive_timeout)
             .open()
             .context("Failed to open second USB2CAN device")?
     } else {
-        usb2can_a
-            .try_clone()
-            .context("Failed to clone USB2CAN device for separate handle")?
+        usb2can_a.clone()
     };
 
     for serial_baud_rate in [
