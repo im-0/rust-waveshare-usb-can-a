@@ -27,7 +27,6 @@
 // TODO: Implement manual CAN bus baudrate selection (SJW, BS1, BS2, prescale).
 // TODO: Implement ID filtering configuration.
 
-use core::panic;
 use std::{
     borrow::Cow,
     collections::VecDeque,
@@ -63,31 +62,35 @@ const MAX_MESSAGE_SIZE: usize = const_fn_max(MAX_FIXED_MESSAGE_SIZE, MAX_VARIABL
 // Should be enough to sync as leftovers of a single frame are kept in the buffers.
 const SYNC_ATTEMPTS: usize = MAX_MESSAGE_SIZE - 1;
 
-const PROTO_HEADER: u8 = 0xaa;
-const PROTO_HEADER_FIXED: u8 = 0x55;
+// Protocol constants.
+const PROTO_HEADER: u8 = 0b10101010;
+const PROTO_HEADER_TYPE_FIXED: u8 = 0b01010101;
 
-const PROTO_TYPE_CFG_SET: u8 = 0b00000010;
-const PROTO_TYPE_CFG_SET_VARIABLE: u8 = 0b00010000;
-const PROTO_TYPE_CFG_SET_SERIAL_BAUD_RATE: u8 = 0b00000100;
+const PROTO_HEADER_TYPE_VARIABLE_FRAME_FLAG: u8 = 0b11000000;
+const PROTO_HEADER_TYPE_VARIABLE_FRAME_MASK: u8 = PROTO_HEADER_TYPE_VARIABLE_FRAME_FLAG;
+const PROTO_HEADER_TYPE_VARIABLE_FRAME_EXTENDED_FLAG: u8 = 0b00100000;
+const PROTO_HEADER_TYPE_VARIABLE_FRAME_REMOTE_FLAG: u8 = 0b00010000;
 
-const PROTO_CFG_MODE_FLAG_LOOPBACK: u8 = 0b00000001;
-const PROTO_CFG_MODE_FLAG_SILENT: u8 = 0b00000010;
+const PROTO_FIXED_TYPE_FRAME_FLAG: u8 = 0b00000001;
+const PROTO_FIXED_TYPE_CFG_FLAG: u8 = 0b00000010;
+const PROTO_FIXED_TYPE_CFG_SET_SERIAL_BAUD_RATE_FLAG: u8 = 0b00000100;
+const PROTO_FIXED_TYPE_CFG_SET_VARIABLE_FLAG: u8 = 0b00010000;
 
-const PROTO_CFG_FRAME_NORMAL: u8 = 0x01;
-const PROTO_CFG_FRAME_EXTENDED: u8 = 0x02;
+const PROTO_FIXED_CFG_MODE_LOOPBACK_FLAG: u8 = 0b00000001;
+const PROTO_FIXED_CFG_MODE_SILENT_FLAG: u8 = 0b00000010;
 
-const PROTO_CFG_RETRANSMISSION_ENABLED: u8 = 0x00;
-const PROTO_CFG_RETRANSMISSION_DISABLED: u8 = 0x01;
+const PROTO_FIXED_ANY_STANDARD: u8 = 0x01;
+const PROTO_FIXED_ANY_EXTENDED: u8 = 0x02;
 
-const PROTO_TYPE_VARIABLE: u8 = 0b11000000;
-const PROTO_TYPE_VARIABLE_MASK: u8 = PROTO_TYPE_VARIABLE;
+const PROTO_FIXED_CFG_RETRANSMISSION_ENABLED: u8 = 0x00;
+const PROTO_FIXED_CFG_RETRANSMISSION_DISABLED: u8 = 0x01;
 
-const PROTO_TYPE_FLAG_EXTENDED: u8 = 0b00100000;
-const PROTO_TYPE_FLAG_REMOTE: u8 = 0b00010000;
+const PROTO_FIXED_FRAME_DATA: u8 = 0x01;
+const PROTO_FIXED_FRAME_REMOTE: u8 = 0x02;
 
-const PROTO_TYPE_SIZE_MASK: u8 = 0b00001111;
+const PROTO_VARIABLE_FRAME_LENGTH_MASK: u8 = 0b00001111;
 
-const PROTO_END: u8 = 0x55;
+const PROTO_VARIABLE_END: u8 = 0b01010101;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -246,6 +249,7 @@ pub fn new<'a>(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Usb2CanConfiguration {
+    variable_encoding: bool,
     can_baud_rate: CanBaudRate,
     receive_only_extended_frames: bool,
     filter: Id,
@@ -258,6 +262,7 @@ pub struct Usb2CanConfiguration {
 impl Usb2CanConfiguration {
     pub fn new(can_baud_rate: CanBaudRate) -> Self {
         Self {
+            variable_encoding: false,
             can_baud_rate,
             receive_only_extended_frames: false,
             filter: ExtendedId::ZERO.into(),
@@ -266,6 +271,16 @@ impl Usb2CanConfiguration {
             silent: false,
             automatic_retransmission: true,
         }
+    }
+
+    pub const fn variable_encoding(&self) -> bool {
+        self.variable_encoding
+    }
+
+    #[must_use]
+    pub const fn set_variable_encoding(mut self, variable_encoding: bool) -> Self {
+        self.variable_encoding = variable_encoding;
+        self
     }
 
     pub const fn can_baud_rate(&self) -> CanBaudRate {
@@ -344,17 +359,23 @@ impl Usb2CanConfiguration {
         [
             // Header
             PROTO_HEADER,
-            PROTO_HEADER_FIXED,
-            // Use variable length protocol to send and receive data
-            // TODO: Make configurable.
-            PROTO_TYPE_CFG_SET | PROTO_TYPE_CFG_SET_VARIABLE,
+            PROTO_HEADER_TYPE_FIXED,
+            // Encoding type
+            PROTO_FIXED_TYPE_CFG_FLAG
+                | if self.variable_encoding {
+                    // Use variable length protocol to send and receive data
+                    PROTO_FIXED_TYPE_CFG_SET_VARIABLE_FLAG
+                } else {
+                    // Use fixed length protocol to send and receive data
+                    0
+                },
             // CAN bus speed
             self.can_baud_rate.to_config_value(),
             // Frame type
             if self.receive_only_extended_frames {
-                PROTO_CFG_FRAME_EXTENDED
+                PROTO_FIXED_ANY_EXTENDED
             } else {
-                PROTO_CFG_FRAME_NORMAL
+                PROTO_FIXED_ANY_STANDARD
             },
             // Filter
             filter[0],
@@ -368,19 +389,19 @@ impl Usb2CanConfiguration {
             mask[3],
             // CAN adapter mode
             if self.loopback {
-                PROTO_CFG_MODE_FLAG_LOOPBACK
+                PROTO_FIXED_CFG_MODE_LOOPBACK_FLAG
             } else {
                 0x00
             } | if self.silent {
-                PROTO_CFG_MODE_FLAG_SILENT
+                PROTO_FIXED_CFG_MODE_SILENT_FLAG
             } else {
                 0x00
             },
             // Automatic retransmission
             if self.automatic_retransmission {
-                PROTO_CFG_RETRANSMISSION_ENABLED
+                PROTO_FIXED_CFG_RETRANSMISSION_ENABLED
             } else {
-                PROTO_CFG_RETRANSMISSION_DISABLED
+                PROTO_FIXED_CFG_RETRANSMISSION_DISABLED
             },
             // Reserved
             0x00,
@@ -421,9 +442,9 @@ impl SerialBaudRate {
         [
             // Header
             PROTO_HEADER,
-            PROTO_HEADER_FIXED,
+            PROTO_HEADER_TYPE_FIXED,
             // Set serial baud rate
-            PROTO_TYPE_CFG_SET | PROTO_TYPE_CFG_SET_SERIAL_BAUD_RATE,
+            PROTO_FIXED_TYPE_CFG_FLAG | PROTO_FIXED_TYPE_CFG_SET_SERIAL_BAUD_RATE_FLAG,
             // Serial baud rate
             self.to_config_value(),
             // Reserved
@@ -652,7 +673,7 @@ impl Usb2Can {
         };
 
         receiver_guard.clear()?;
-        transmitter_guard.fill_checksum_and_transmit_message(&mut config_message)?;
+        transmitter_guard.fill_checksum_and_transmit_all(&mut config_message)?;
 
         // Adapter needs some time to process the configuration change.
         receiver_guard.add_delay(CONFIGURATION_DELAY);
@@ -670,7 +691,7 @@ impl Usb2Can {
         let mut transmitter_guard = self.lock_transmitter()?;
 
         let mut config_message = serial_baud_rate.to_configuration_message();
-        transmitter_guard.fill_checksum_and_transmit_message(&mut config_message)?;
+        transmitter_guard.fill_checksum_and_transmit_all(&mut config_message)?;
 
         // Adapater does not respond while blinking.
         let delay = serial_baud_rate.to_blink_delay();
@@ -718,10 +739,16 @@ impl blocking::Can for Usb2Can {
     type Error = Error;
 
     fn transmit(&mut self, frame: &Frame) -> Result<()> {
+        trace!("Transmitting frame: {:?}", frame);
+
         let mut transmitter_guard = self.lock_transmitter()?;
         let configuration_guard = self.lock_configuration()?;
 
-        transmitter_guard.transmit_frame(frame)?;
+        if configuration_guard.variable_encoding() {
+            transmitter_guard.transmit_all(&frame.to_message_variable())?;
+        } else {
+            transmitter_guard.fill_checksum_and_transmit_all(&mut frame.to_message_fixed())?;
+        }
 
         let delay_multipyer = transmitter_guard.frame_delay_multiplier();
         if delay_multipyer > f64::EPSILON {
@@ -735,7 +762,10 @@ impl blocking::Can for Usb2Can {
     }
 
     fn receive(&mut self) -> Result<Self::Frame> {
-        self.lock_receiver()?.receive_frame()
+        let mut receiver_guard = self.lock_receiver()?;
+        let configuration_guard = self.lock_configuration()?;
+
+        receiver_guard.receive_frame(configuration_guard.variable_encoding())
     }
 }
 
@@ -800,9 +830,9 @@ impl Transmitter {
         }
     }
 
-    fn fill_checksum_and_transmit_message(&mut self, config_message: &mut [u8]) -> Result<()> {
-        Self::fill_checksum(config_message);
-        self.transmit_all(config_message)
+    fn fill_checksum_and_transmit_all(&mut self, message: &mut [u8]) -> Result<()> {
+        Self::fill_checksum(message);
+        self.transmit_all(message)
     }
 
     fn fill_checksum(message: &mut [u8]) {
@@ -813,11 +843,6 @@ impl Transmitter {
         message[2..message.len() - 1]
             .iter()
             .fold(0u8, |acc, &x| acc.wrapping_add(x))
-    }
-
-    fn transmit_frame(&mut self, frame: &Frame) -> Result<()> {
-        trace!("Transmitting frame: {:?}", frame);
-        self.transmit_all(&frame.to_message())
     }
 
     fn transmit_all(&mut self, message: &[u8]) -> Result<()> {
@@ -880,12 +905,12 @@ impl Receiver {
             })
     }
 
-    fn receive_frame(&mut self) -> Result<Frame> {
+    fn receive_frame(&mut self, variable: bool) -> Result<Frame> {
         if self.sync_attempts_left == 0 {
-            self.receive_frame_no_sync()
+            self.receive_frame_no_sync(variable)
         } else {
             loop {
-                match self.receive_frame_no_sync() {
+                match self.receive_frame_no_sync(variable) {
                     Ok(frame) => {
                         self.sync_attempts_left = 0;
                         break Ok(frame);
@@ -914,15 +939,21 @@ impl Receiver {
         })
     }
 
-    fn receive_frame_no_sync(&mut self) -> Result<Frame> {
+    fn receive_frame_no_sync(&mut self, variable: bool) -> Result<Frame> {
         let mut received_bytes = Vec::with_capacity(MAX_MESSAGE_SIZE);
 
-        let result = FrameReceiveState::read_frame(&mut || {
+        let mut read_byte = || {
             self.receive_byte().map(|byte| {
                 received_bytes.push(byte);
                 byte
             })
-        });
+        };
+
+        let result = if variable {
+            VariableFrameReceiveState::read_frame(&mut read_byte)
+        } else {
+            FixedFrameReceiveState::read_frame(&mut read_byte)
+        };
 
         if result.is_err() && !received_bytes.is_empty() {
             self.push_back_unused_bytes(&received_bytes[1..]);
@@ -989,7 +1020,246 @@ impl Receiver {
     }
 }
 
-enum FrameReceiveState {
+enum FixedFrameReceiveState {
+    HeaderOrHeaderFixed,
+    HeaderFixed,
+    HeaderFrame,
+    StandardOrExtended,
+    DataOrRemote { extended: bool },
+    Id { bytes_left: usize, frame: Frame },
+    DataLength { frame: Frame },
+    Data { byte_n: usize, frame: Frame },
+    Skip { bytes_left: usize, frame: Frame },
+    Reserved(Frame),
+    Checksum(Frame),
+    Finished { checksum: u8, frame: Frame },
+}
+
+impl FixedFrameReceiveState {
+    fn read_frame(read_byte: &mut impl FnMut() -> Result<u8>) -> Result<Frame> {
+        let mut state = Self::HeaderOrHeaderFixed;
+
+        let mut our_checksum = 0u8;
+
+        loop {
+            let byte = read_byte()?;
+
+            match state {
+                Self::HeaderFrame
+                | Self::StandardOrExtended
+                | Self::DataOrRemote { .. }
+                | Self::Id { .. }
+                | Self::DataLength { .. }
+                | Self::Data { .. }
+                | Self::Skip { .. }
+                | Self::Reserved { .. } => {
+                    our_checksum = our_checksum.wrapping_add(byte);
+                }
+
+                Self::HeaderOrHeaderFixed
+                | Self::HeaderFixed
+                | Self::Checksum(_)
+                | Self::Finished { .. } => {}
+            }
+
+            state = state.advance(byte)?;
+            if let Self::Finished { checksum, frame } = state {
+                if checksum == our_checksum {
+                    break Ok(frame);
+                } else {
+                    break Err(Error::RecvUnexpected(format!(
+                        "Wrong checksum, message has 0x{:02x} (calculated 0x{:02x})",
+                        checksum, our_checksum
+                    )));
+                }
+            }
+        }
+    }
+
+    fn advance(self, byte: u8) -> Result<Self> {
+        let next_state = match (self, byte) {
+            (Self::HeaderOrHeaderFixed, PROTO_HEADER) => Self::HeaderFixed,
+            (Self::HeaderOrHeaderFixed, PROTO_HEADER_TYPE_FIXED) => Self::HeaderFrame,
+            (Self::HeaderOrHeaderFixed, byte) => {
+                return Err(Error::RecvUnexpected(format!(
+                    "Expected header, received 0x{:02x} (!= 0x{:02x})",
+                    byte, PROTO_HEADER
+                )))
+            }
+
+            (Self::HeaderFixed, PROTO_HEADER_TYPE_FIXED) => Self::HeaderFrame,
+            (Self::HeaderFixed, byte) => {
+                return Err(Error::RecvUnexpected(format!(
+                    "Expected fixed header, received 0x{:02x} (!= 0x{:02x})",
+                    byte, PROTO_HEADER_TYPE_FIXED
+                )))
+            }
+
+            (Self::HeaderFrame, PROTO_FIXED_TYPE_FRAME_FLAG) => Self::StandardOrExtended,
+            (Self::HeaderFrame, byte) => {
+                return Err(Error::RecvUnexpected(format!(
+                    "Expected frame header, received 0x{:02x} (!= 0x{:02x})",
+                    byte, PROTO_FIXED_TYPE_FRAME_FLAG
+                )))
+            }
+
+            (Self::StandardOrExtended, PROTO_FIXED_ANY_STANDARD) => Self::DataOrRemote { extended: false },
+            (Self::StandardOrExtended, PROTO_FIXED_ANY_EXTENDED) => Self::DataOrRemote { extended: true },
+            (Self::StandardOrExtended, byte) => {
+                return Err(Error::RecvUnexpected(format!(
+                    "Expected frame type (standard or extended), received 0x{:02x} (!= {{0x{:02x}, 0x{:02x}}})",
+                    byte, PROTO_FIXED_ANY_STANDARD, PROTO_FIXED_ANY_EXTENDED
+                )))
+            }
+
+            (Self::DataOrRemote { extended }, PROTO_FIXED_FRAME_DATA) => if extended {
+                Self::Id { bytes_left: 3, frame: Frame {
+                    id: ExtendedId::ZERO.into(),
+                    data: FrameData::Data(Vec::with_capacity(MAX_DATA_LENGTH)),
+                }}
+            } else {
+                Self::Id { bytes_left: 3, frame: Frame {
+                    id: StandardId::ZERO.into(),
+                    data: FrameData::Data(Vec::with_capacity(MAX_DATA_LENGTH)),
+                }}
+            }
+            (Self::DataOrRemote { extended }, PROTO_FIXED_FRAME_REMOTE) => if extended {
+                Self::Id { bytes_left: 3, frame: Frame {
+                    id: ExtendedId::ZERO.into(),
+                    data: FrameData::Remote(0),
+                }}
+            } else {
+                Self::Id { bytes_left: 3, frame: Frame {
+                    id: StandardId::ZERO.into(),
+                    data: FrameData::Remote(0),
+                }}
+            }
+            (Self::DataOrRemote { .. }, byte) => {
+                return Err(Error::RecvUnexpected(format!(
+                    "Expected frame type (data or remote), received 0x{:02x} (!= {{0x{:02x}, 0x{:02x}}})",
+                    byte, PROTO_FIXED_FRAME_DATA, PROTO_FIXED_FRAME_REMOTE
+                )))
+            }
+
+            (
+                Self::Id {
+                    bytes_left,
+                    mut frame,
+                },
+                byte,
+            ) => {
+                frame.add_byte_to_id(bytes_left, byte)?;
+
+                if bytes_left == 0 {
+                    Self::DataLength { frame }
+                } else {
+                    Self::Id {
+                        bytes_left: bytes_left - 1,
+                        frame,
+                    }
+                }
+            }
+
+            (
+                Self::DataLength {
+                    mut frame,
+                },
+                byte,
+            ) if byte as usize <= MAX_DATA_LENGTH => {
+                match frame.data {
+                    FrameData::Data(ref mut data) => {
+                        if byte == 0 {
+                            Self::Skip { bytes_left: MAX_DATA_LENGTH, frame }
+                        } else {
+                            data.resize(byte as usize, 0);
+                            Self::Data {
+                                byte_n: 0,
+                                frame,
+                            }
+                        }
+                    }
+
+                    FrameData::Remote(ref mut dlc) => {
+                        *dlc = byte as usize;
+                        Self::Skip {
+                            bytes_left: MAX_DATA_LENGTH,
+                            frame,
+                        }
+                    }
+                }
+            }
+            (
+                Self::DataLength { .. },
+                byte,
+            ) => {
+                return Err(Error::RecvUnexpected(format!(
+                    "Expected data length, received 0x{:02x} (data length > {})",
+                    byte, MAX_DATA_LENGTH
+                )));
+            }
+
+            (
+                Self::Data {
+                    mut byte_n,
+                    mut frame,
+                },
+                byte,
+            ) => match frame.data {
+                FrameData::Data(ref mut data) => {
+                    data[byte_n] = byte;
+
+                    byte_n += 1;
+                    if byte_n == data.len() {
+                        if data.len() == MAX_DATA_LENGTH {
+                            Self::Reserved(frame)
+                        } else {
+                            Self::Skip { bytes_left: MAX_DATA_LENGTH - data.len(), frame }
+                        }
+                    } else {
+                        Self::Data { byte_n, frame }
+                    }
+                }
+
+                FrameData::Remote(_) => {
+                    unreachable!("Logic error: trying to receive data for remote frame")
+                }
+            },
+
+            (
+                Self::Skip {
+                    mut bytes_left,
+                    frame,
+                },
+                _, // Unused fields: remote frame or less than 8 bytes of data.
+            ) => {
+                bytes_left -= 1;
+                if bytes_left == 0 {
+                    Self::Reserved(frame)
+                } else {
+                    Self::Skip { bytes_left, frame }
+                }
+            }
+
+            (Self::Reserved(frame), 0) => Self::Checksum(frame),
+            (Self::Reserved(_), byte) => {
+                return Err(Error::RecvUnexpected(format!(
+                    "Expected reserved, received 0x{:02x} (!= 0x00)",
+                    byte
+                )))
+            }
+
+            (Self::Checksum(frame), byte) => Self::Finished { checksum: byte, frame },
+
+            (Self::Finished { .. }, _) => {
+                unreachable!("Logic error: trying to advance finished state")
+            }
+        };
+
+        Ok(next_state)
+    }
+}
+
+enum VariableFrameReceiveState {
     EndOrHeader,
     Header,
     Type,
@@ -999,7 +1269,7 @@ enum FrameReceiveState {
     Finished(Frame),
 }
 
-impl FrameReceiveState {
+impl VariableFrameReceiveState {
     fn read_frame(read_byte: &mut impl FnMut() -> Result<u8>) -> Result<Frame> {
         let mut state = Self::EndOrHeader;
 
@@ -1013,12 +1283,12 @@ impl FrameReceiveState {
 
     fn advance(self, byte: u8) -> Result<Self> {
         let next_state = match (self, byte) {
-            (Self::EndOrHeader, PROTO_END) => Self::Header,
+            (Self::EndOrHeader, PROTO_VARIABLE_END) => Self::Header,
             (Self::EndOrHeader, PROTO_HEADER) => Self::Type,
             (Self::EndOrHeader, byte) => {
                 return Err(Error::RecvUnexpected(format!(
                     "Expected end or header, received 0x{:02x} (!= {{0x{:02x}, 0x{:02x}}})",
-                    byte, PROTO_END, PROTO_HEADER
+                    byte, PROTO_VARIABLE_END, PROTO_HEADER
                 )))
             }
 
@@ -1031,20 +1301,22 @@ impl FrameReceiveState {
             }
 
             (Self::Type, byte) => {
-                if byte & PROTO_TYPE_VARIABLE_MASK != PROTO_TYPE_VARIABLE {
+                if byte & PROTO_HEADER_TYPE_VARIABLE_FRAME_MASK
+                    != PROTO_HEADER_TYPE_VARIABLE_FRAME_FLAG
+                {
                     return Err(Error::RecvUnexpected(format!(
                         "Expected type, received 0x{:02x} (0x{:02x} not set)",
-                        byte, PROTO_TYPE_VARIABLE
+                        byte, PROTO_HEADER_TYPE_VARIABLE_FRAME_FLAG
                     )));
                 }
 
-                let zero_id = if byte & PROTO_TYPE_FLAG_EXTENDED == 0 {
+                let zero_id = if byte & PROTO_HEADER_TYPE_VARIABLE_FRAME_EXTENDED_FLAG == 0 {
                     Id::Standard(StandardId::ZERO)
                 } else {
                     Id::Extended(ExtendedId::ZERO)
                 };
 
-                let data_len = (byte & PROTO_TYPE_SIZE_MASK) as usize;
+                let data_len = (byte & PROTO_VARIABLE_FRAME_LENGTH_MASK) as usize;
                 if data_len > MAX_DATA_LENGTH {
                     return Err(Error::RecvUnexpected(format!(
                         "Expected type, received 0x{:02x} (data length > {})",
@@ -1052,7 +1324,7 @@ impl FrameReceiveState {
                     )));
                 }
 
-                let frame = if byte & PROTO_TYPE_FLAG_REMOTE == 0 {
+                let frame = if byte & PROTO_HEADER_TYPE_VARIABLE_FRAME_REMOTE_FLAG == 0 {
                     Frame {
                         id: zero_id,
                         data: FrameData::Data(vec![0; data_len]),
@@ -1077,29 +1349,7 @@ impl FrameReceiveState {
                 },
                 byte,
             ) => {
-                frame.id = match frame.id {
-                    Id::Standard(standard_id) => {
-                        let standard_id =
-                            standard_id.as_raw() | (byte as u16) << ((1 - bytes_left) * 8);
-                        Id::Standard(StandardId::new(standard_id).ok_or_else(|| {
-                            Error::RecvUnexpected(format!(
-                                "Invalid standard ID: 0x{:04x}",
-                                standard_id
-                            ))
-                        })?)
-                    }
-
-                    Id::Extended(extended_id) => {
-                        let extended_id =
-                            extended_id.as_raw() | (byte as u32) << ((3 - bytes_left) * 8);
-                        Id::Extended(ExtendedId::new(extended_id).ok_or_else(|| {
-                            Error::RecvUnexpected(format!(
-                                "Invalid extended ID: 0x{:08x}",
-                                extended_id
-                            ))
-                        })?)
-                    }
-                };
+                frame.add_byte_to_id(bytes_left, byte)?;
 
                 if bytes_left == 0 {
                     if frame.dlc() == 0 {
@@ -1159,7 +1409,7 @@ impl FrameReceiveState {
             }
 
             (Self::Finished(_), _) => {
-                panic!("Logic error: trying to advance finished state")
+                unreachable!("Logic error: trying to advance finished state")
             }
         };
 
@@ -1180,21 +1430,64 @@ enum FrameData {
 }
 
 impl Frame {
-    fn to_message(&self) -> Vec<u8> {
-        // TODO: Support fixed length encoding.
+    fn to_message_fixed(&self) -> [u8; MAX_FIXED_MESSAGE_SIZE] {
+        let id = id_to_bytes(self.id);
 
+        #[allow(clippy::get_first)]
+        [
+            // Header
+            PROTO_HEADER,
+            PROTO_HEADER_TYPE_FIXED,
+            // This is normal data or remote frame
+            PROTO_FIXED_TYPE_FRAME_FLAG,
+            // Frame type: standard or extended
+            if self.is_extended() {
+                PROTO_FIXED_ANY_EXTENDED
+            } else {
+                PROTO_FIXED_ANY_STANDARD
+            },
+            // Frame type: data or remote
+            if self.is_remote_frame() {
+                PROTO_FIXED_FRAME_REMOTE
+            } else {
+                PROTO_FIXED_FRAME_DATA
+            },
+            // Frame ID
+            id[0],
+            id[1],
+            id[2],
+            id[3],
+            // Data length
+            self.dlc() as u8,
+            // Data
+            self.data().get(0).copied().unwrap_or(0),
+            self.data().get(1).copied().unwrap_or(0),
+            self.data().get(2).copied().unwrap_or(0),
+            self.data().get(3).copied().unwrap_or(0),
+            self.data().get(4).copied().unwrap_or(0),
+            self.data().get(5).copied().unwrap_or(0),
+            self.data().get(6).copied().unwrap_or(0),
+            self.data().get(7).copied().unwrap_or(0),
+            // Reserved
+            0x00,
+            // Checksum (will be filled in later)
+            0x00,
+        ]
+    }
+
+    fn to_message_variable(&self) -> Vec<u8> {
         let mut message = Vec::with_capacity(MAX_VARIABLE_MESSAGE_SIZE);
 
         // Header
         message.push(PROTO_HEADER);
 
         // Type
-        let mut message_type = PROTO_TYPE_VARIABLE;
+        let mut message_type = PROTO_HEADER_TYPE_VARIABLE_FRAME_FLAG;
         if self.is_extended() {
-            message_type |= PROTO_TYPE_FLAG_EXTENDED;
+            message_type |= PROTO_HEADER_TYPE_VARIABLE_FRAME_EXTENDED_FLAG;
         }
         if self.is_remote_frame() {
-            message_type |= PROTO_TYPE_FLAG_REMOTE;
+            message_type |= PROTO_HEADER_TYPE_VARIABLE_FRAME_REMOTE_FLAG;
         }
         message_type |= self.dlc() as u8;
         message.push(message_type);
@@ -1213,7 +1506,7 @@ impl Frame {
         }
 
         // End code
-        message.push(PROTO_END);
+        message.push(PROTO_VARIABLE_END);
 
         message
     }
@@ -1238,6 +1531,26 @@ impl Frame {
         let interframe_spacing = 3;
 
         data_len + frame_without_data + interframe_spacing
+    }
+
+    fn add_byte_to_id(&mut self, bytes_left: usize, byte: u8) -> Result<()> {
+        self.id = match self.id {
+            Id::Standard(standard_id) => {
+                let standard_id = standard_id.as_raw() | (byte as u16) << ((1 - bytes_left) * 8);
+                Id::Standard(StandardId::new(standard_id).ok_or_else(|| {
+                    Error::RecvUnexpected(format!("Invalid standard ID: 0x{:04x}", standard_id))
+                })?)
+            }
+
+            Id::Extended(extended_id) => {
+                let extended_id = extended_id.as_raw() | (byte as u32) << ((3 - bytes_left) * 8);
+                Id::Extended(ExtendedId::new(extended_id).ok_or_else(|| {
+                    Error::RecvUnexpected(format!("Invalid extended ID: 0x{:08x}", extended_id))
+                })?)
+            }
+        };
+
+        Ok(())
     }
 }
 
@@ -1384,8 +1697,6 @@ fn id_to_bytes(id: Id) -> [u8; 4] {
 
 #[cfg(test)]
 mod tests {
-    use std::panic;
-
     use embedded_can::{ExtendedId, StandardId};
     use proptest::{arbitrary::any, collection::vec, proptest};
 
@@ -1406,7 +1717,7 @@ mod tests {
     fn small_send_message_size() {
         // Smallest message.
         let frame = Frame::new_remote(StandardId::MAX, 0).unwrap();
-        let message = frame.to_message();
+        let message = frame.to_message_variable();
         assert!(message.len() < MAX_VARIABLE_MESSAGE_SIZE);
     }
 
@@ -1414,7 +1725,7 @@ mod tests {
     fn max_send_message_size() {
         // Largest message.
         let frame = Frame::new(ExtendedId::MAX, &[0, 0, 0, 0, 0, 0, 0, 0]).unwrap();
-        let message = frame.to_message();
+        let message = frame.to_message_variable();
         assert_eq!(message.len(), MAX_VARIABLE_MESSAGE_SIZE);
     }
 
@@ -1426,7 +1737,7 @@ mod tests {
         ) {
             let id = StandardId::new(id).expect("Logic error: proptest produced invalid standard ID");
             let frame = Frame::new(id, &data).unwrap();
-            let message = frame.to_message();
+            let message = frame.to_message_variable();
             assert!(message.len() <= MAX_VARIABLE_MESSAGE_SIZE);
         }
 
@@ -1437,7 +1748,7 @@ mod tests {
         ) {
             let id = ExtendedId::new(id).expect("Logic error: proptest produced invalid extended ID");
             let frame = Frame::new(id, &data).unwrap();
-            let message = frame.to_message();
+            let message = frame.to_message_variable();
             assert!(message.len() <= MAX_VARIABLE_MESSAGE_SIZE);
         }
     }
@@ -1445,7 +1756,7 @@ mod tests {
     #[test]
     fn standard_id_endianness() {
         let frame = Frame::new_remote(StandardId::MAX, 0).unwrap();
-        let message = frame.to_message();
+        let message = frame.to_message_variable();
         assert_eq!(message[2], 0xff);
         assert_eq!(message[3], 0x07);
     }
@@ -1453,7 +1764,7 @@ mod tests {
     #[test]
     fn extended_id_endianness() {
         let frame = Frame::new_remote(ExtendedId::MAX, 0).unwrap();
-        let message = frame.to_message();
+        let message = frame.to_message_variable();
         assert_eq!(message[2], 0xff);
         assert_eq!(message[3], 0xff);
         assert_eq!(message[4], 0xff);
@@ -1473,9 +1784,9 @@ mod tests {
     }
 
     #[test]
-    fn standard_data_frame_short() {
+    fn variable_standard_data_frame_short() {
         let frame = Frame::new(StandardId::MAX, &[]).unwrap();
-        let message = frame.to_message();
+        let message = frame.to_message_variable();
         assert_eq!(
             message,
             [
@@ -1488,13 +1799,13 @@ mod tests {
     }
 
     #[test]
-    fn standard_data_frame_long() {
+    fn variable_standard_data_frame_long() {
         let frame = Frame::new(
             StandardId::MAX,
             &[0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef],
         )
         .unwrap();
-        let message = frame.to_message();
+        let message = frame.to_message_variable();
         assert_eq!(
             message,
             [
@@ -1508,9 +1819,9 @@ mod tests {
     }
 
     #[test]
-    fn extended_data_frame_short() {
+    fn variable_extended_data_frame_short() {
         let frame = Frame::new(ExtendedId::MAX, &[]).unwrap();
-        let message = frame.to_message();
+        let message = frame.to_message_variable();
         assert_eq!(
             message,
             [
@@ -1523,13 +1834,13 @@ mod tests {
     }
 
     #[test]
-    fn extended_data_frame_long() {
+    fn variable_extended_data_frame_long() {
         let frame = Frame::new(
             ExtendedId::MAX,
             &[0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef],
         )
         .unwrap();
-        let message = frame.to_message();
+        let message = frame.to_message_variable();
         assert_eq!(
             message,
             [
@@ -1543,9 +1854,9 @@ mod tests {
     }
 
     #[test]
-    fn standard_remote_frame_short() {
+    fn variable_standard_remote_frame_short() {
         let frame = Frame::new_remote(StandardId::MAX, 0).unwrap();
-        let message = frame.to_message();
+        let message = frame.to_message_variable();
         assert_eq!(
             message,
             [
@@ -1558,9 +1869,9 @@ mod tests {
     }
 
     #[test]
-    fn standard_remote_frame_long() {
+    fn variable_standard_remote_frame_long() {
         let frame = Frame::new_remote(StandardId::MAX, MAX_DATA_LENGTH).unwrap();
-        let message = frame.to_message();
+        let message = frame.to_message_variable();
         assert_eq!(
             message,
             [
@@ -1574,9 +1885,9 @@ mod tests {
     }
 
     #[test]
-    fn extended_remote_frame_short() {
+    fn variable_extended_remote_frame_short() {
         let frame = Frame::new_remote(ExtendedId::MAX, 0).unwrap();
-        let message = frame.to_message();
+        let message = frame.to_message_variable();
         assert_eq!(
             message,
             [
@@ -1589,9 +1900,9 @@ mod tests {
     }
 
     #[test]
-    fn extended_remote_frame_long() {
+    fn variable_extended_remote_frame_long() {
         let frame = Frame::new_remote(ExtendedId::MAX, MAX_DATA_LENGTH).unwrap();
-        let message = frame.to_message();
+        let message = frame.to_message_variable();
         assert_eq!(
             message,
             [
@@ -1605,90 +1916,90 @@ mod tests {
     }
 
     #[test]
-    fn serde_frame_standard() {
+    fn variable_serde_frame_standard() {
         let frame = Frame::new(StandardId::MAX, &[0, 1, 2, 3, 4, 5, 6, 7]).unwrap();
-        check_serialize_deserialize_frame(&frame);
+        check_variable_serialize_deserialize_frame(&frame);
 
         let frame = Frame::new(StandardId::MAX, &[]).unwrap();
-        check_serialize_deserialize_frame(&frame);
+        check_variable_serialize_deserialize_frame(&frame);
     }
 
     #[test]
-    fn serde_frame_extended() {
+    fn variable_serde_frame_extended() {
         let frame = Frame::new(ExtendedId::MAX, &[0, 1, 2, 3, 4, 5, 6, 7]).unwrap();
-        check_serialize_deserialize_frame(&frame);
+        check_variable_serialize_deserialize_frame(&frame);
 
         let frame = Frame::new(ExtendedId::MAX, &[]).unwrap();
-        check_serialize_deserialize_frame(&frame);
+        check_variable_serialize_deserialize_frame(&frame);
     }
 
     #[test]
-    fn serde_frame_remote_standard() {
+    fn variable_serde_frame_remote_standard() {
         let frame = Frame::new_remote(StandardId::MAX, MAX_DATA_LENGTH).unwrap();
-        check_serialize_deserialize_frame(&frame);
+        check_variable_serialize_deserialize_frame(&frame);
 
         let frame = Frame::new_remote(StandardId::MAX, 0).unwrap();
-        check_serialize_deserialize_frame(&frame);
+        check_variable_serialize_deserialize_frame(&frame);
     }
 
     #[test]
-    fn serde_frame_remote_extended() {
+    fn variable_serde_frame_remote_extended() {
         let frame = Frame::new_remote(ExtendedId::MAX, MAX_DATA_LENGTH).unwrap();
-        check_serialize_deserialize_frame(&frame);
+        check_variable_serialize_deserialize_frame(&frame);
 
         let frame = Frame::new_remote(ExtendedId::MAX, 0).unwrap();
-        check_serialize_deserialize_frame(&frame);
+        check_variable_serialize_deserialize_frame(&frame);
     }
 
     proptest! {
         #[test]
-        fn random_serde_frame_standard(
+        fn variable_random_serde_frame_standard(
                 id in StandardId::ZERO.as_raw()..=StandardId::MAX.as_raw(),
                 data in vec(any::<u8>(), 0..=MAX_DATA_LENGTH),
         ) {
             let id = StandardId::new(id).expect("Logic error: proptest produced invalid standard ID");
             let frame = Frame::new(id, &data).unwrap();
-            check_serialize_deserialize_frame(&frame);
+            check_variable_serialize_deserialize_frame(&frame);
         }
 
         #[test]
-        fn random_serde_frame_extended(
+        fn variable_random_serde_frame_extended(
                 id in ExtendedId::ZERO.as_raw()..=ExtendedId::MAX.as_raw(),
                 data in vec(any::<u8>(), 0..=MAX_DATA_LENGTH),
         ) {
             let id = ExtendedId::new(id).expect("Logic error: proptest produced invalid standard ID");
             let frame = Frame::new(id, &data).unwrap();
-            check_serialize_deserialize_frame(&frame);
+            check_variable_serialize_deserialize_frame(&frame);
         }
 
-        fn random_serde_frame_remote_standard(
+        fn variable_random_serde_frame_remote_standard(
             id in StandardId::ZERO.as_raw()..=StandardId::MAX.as_raw(),
             dlc in 0..=MAX_DATA_LENGTH,
         ) {
             let id = StandardId::new(id).expect("Logic error: proptest produced invalid standard ID");
             let frame = Frame::new_remote(id, dlc).unwrap();
-            check_serialize_deserialize_frame(&frame);
+            check_variable_serialize_deserialize_frame(&frame);
         }
 
-        fn random_serde_frame_remote_extended(
+        fn variable_random_serde_frame_remote_extended(
             id in ExtendedId::ZERO.as_raw()..=ExtendedId::MAX.as_raw(),
             dlc in 0..=MAX_DATA_LENGTH,
         ) {
             let id = ExtendedId::new(id).expect("Logic error: proptest produced invalid standard ID");
             let frame = Frame::new_remote(id, dlc).unwrap();
-            check_serialize_deserialize_frame(&frame);
+            check_variable_serialize_deserialize_frame(&frame);
         }
     }
 
     // TODO: Test serialization and deserialization with injected errors.
 
-    fn check_serialize_deserialize_frame(frame: &Frame) {
-        let message = frame.to_message();
+    fn check_variable_serialize_deserialize_frame(frame: &Frame) {
+        let message = frame.to_message_variable();
         let mut reader_fn = into_reader_fn(message);
 
-        let received_frame = FrameReceiveState::read_frame(&mut reader_fn).unwrap();
+        let received_frame = VariableFrameReceiveState::read_frame(&mut reader_fn).unwrap();
 
-        assert_eq!(reader_fn().unwrap(), PROTO_END);
+        assert_eq!(reader_fn().unwrap(), PROTO_VARIABLE_END);
         assert!(reader_fn().is_err());
 
         assert_eq!(frame, &received_frame);
