@@ -160,6 +160,7 @@ fn run_inject(args: &cli::Cli, options: &cli::InjectOptions) -> Result<()> {
 
     let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
         .set_serial_baud_rate(options.serial_baud_rate)
+        .set_frame_delay_multiplier(options.frame_delay_multiplier)?
         .open()
         .context("Failed to open USB2CAN device")?;
 
