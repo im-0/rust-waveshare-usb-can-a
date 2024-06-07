@@ -166,10 +166,15 @@ impl Usb2CanBuilder {
         self.frame_delay_multiplier
     }
 
-    #[must_use]
-    pub const fn set_frame_delay_multiplier(mut self, frame_delay_multiplier: f64) -> Self {
-        self.frame_delay_multiplier = frame_delay_multiplier;
-        self
+    pub fn set_frame_delay_multiplier(mut self, frame_delay_multiplier: f64) -> Result<Self> {
+        if frame_delay_multiplier.is_finite() && frame_delay_multiplier.is_sign_positive() {
+            self.frame_delay_multiplier = frame_delay_multiplier;
+            Ok(self)
+        } else {
+            Err(Error::SetConfiguration(
+                "Frame delay multiplier must be a positive finite number".into(),
+            ))
+        }
     }
 
     pub const fn adapter_configuration(&self) -> &Usb2CanConfiguration {
@@ -206,7 +211,7 @@ impl Usb2CanBuilder {
         receiver.set_receive_timeout(self.serial_receive_timeout)?;
 
         let mut transmitter = Transmitter::new(serial);
-        transmitter.set_frame_delay_multiplier(self.frame_delay_multiplier);
+        transmitter.set_frame_delay_multiplier(self.frame_delay_multiplier)?;
 
         if with_blink_delay {
             let delay = self.serial_baud_rate.to_blink_delay();
@@ -662,8 +667,9 @@ impl Usb2Can {
     }
 
     pub fn set_frame_delay_multiplier(&mut self, frame_delay_multiplier: f64) -> Result<()> {
-        self.lock_transmitter()
-            .map(|mut transmitter| transmitter.set_frame_delay_multiplier(frame_delay_multiplier))
+        self.lock_transmitter().and_then(|mut transmitter| {
+            transmitter.set_frame_delay_multiplier(frame_delay_multiplier)
+        })
     }
 
     fn fill_checksum_and_transmit_configuration_message(
@@ -790,8 +796,15 @@ impl Transmitter {
         self.frame_delay_multiplier
     }
 
-    fn set_frame_delay_multiplier(&mut self, frame_delay_multiplier: f64) {
-        self.frame_delay_multiplier = frame_delay_multiplier;
+    fn set_frame_delay_multiplier(&mut self, frame_delay_multiplier: f64) -> Result<()> {
+        if frame_delay_multiplier.is_finite() && frame_delay_multiplier.is_sign_positive() {
+            self.frame_delay_multiplier = frame_delay_multiplier;
+            Ok(())
+        } else {
+            Err(Error::SetConfiguration(
+                "Frame delay multiplier must be a positive finite number".into(),
+            ))
+        }
     }
 
     fn transmit_frame(&mut self, frame: &Frame) -> Result<()> {
