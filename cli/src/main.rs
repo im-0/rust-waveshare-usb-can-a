@@ -421,6 +421,27 @@ fn self_test_can_rates_frame_types_and_filtering(
 ) -> Result<()> {
     info!("Testing all supported CAN baud rates, frame types, and filtering...");
 
+    // Open USB2CAN adapter.
+    let usb2can_conf = Usb2CanConfiguration::new(CanBaudRate::R5kBd)
+        .set_loopback(options.second_serial_path.is_none())
+        .set_silent(options.second_serial_path.is_none() && !options.send_frames)
+        .set_automatic_retransmission(false);
+
+    let mut usb2can_a = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
+        .set_serial_baud_rate(options.first_serial_baud_rate)
+        .set_serial_receive_timeout(options.receive_timeout)
+        .open()
+        .context("Failed to open USB2CAN device")?;
+    let mut usb2can_b = if let Some(ref second_serial_path) = options.second_serial_path {
+        waveshare_usb_can_a::new(second_serial_path, &usb2can_conf)
+            .set_serial_baud_rate(options.second_serial_baud_rate)
+            .set_serial_receive_timeout(options.receive_timeout)
+            .open()
+            .context("Failed to open second USB2CAN device")?
+    } else {
+        usb2can_a.clone()
+    };
+
     for can_baud_rate in [
         CanBaudRate::R5kBd,
         CanBaudRate::R10kBd,
@@ -437,21 +458,6 @@ fn self_test_can_rates_frame_types_and_filtering(
     ] {
         for extended_frame in [false, true] {
             for filtering in [false, true] {
-                info!(
-                    "Running tests with CAN baud rate {}, {} frames, {}...",
-                    can_baud_rate,
-                    if extended_frame {
-                        "extended"
-                    } else {
-                        "standard"
-                    },
-                    if filtering {
-                        "with filtering"
-                    } else {
-                        "without filtering"
-                    }
-                );
-
                 let (filter, mask) = if filtering {
                     let id: Id = if extended_frame {
                         ExtendedId::MAX.into()
@@ -468,26 +474,28 @@ fn self_test_can_rates_frame_types_and_filtering(
                     (id, id)
                 };
 
-                // Open USB2CAN adapter.
-                let usb2can_conf = Usb2CanConfiguration::new(can_baud_rate)
-                    .set_filter(filter, mask)?
-                    .set_loopback(options.second_serial_path.is_none())
-                    .set_silent(options.second_serial_path.is_none() && !options.send_frames)
-                    .set_automatic_retransmission(false);
+                let usb2can_conf = usb2can_a
+                    .configuration()?
+                    .set_can_baud_rate(can_baud_rate)
+                    .set_filter(filter, mask)?;
+                usb2can_a.set_configuration(&usb2can_conf)?;
 
-                let mut usb2can_a = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
-                    .set_serial_baud_rate(options.first_serial_baud_rate)
-                    .set_serial_receive_timeout(options.receive_timeout)
-                    .open()
-                    .context("Failed to open USB2CAN device")?;
-
-                if let Some(ref second_serial_path) = options.second_serial_path {
-                    let mut usb2can_b = waveshare_usb_can_a::new(second_serial_path, &usb2can_conf)
-                        .set_serial_baud_rate(options.second_serial_baud_rate)
-                        .set_serial_receive_timeout(options.receive_timeout)
-                        .open()
-                        .context("Failed to open second USB2CAN device")?;
-
+                info!(
+                    "Running tests with CAN baud rate {}, {} frames, {}...",
+                    can_baud_rate,
+                    if extended_frame {
+                        "extended"
+                    } else {
+                        "standard"
+                    },
+                    if filtering {
+                        "with filtering"
+                    } else {
+                        "without filtering"
+                    }
+                );
+                if options.second_serial_path.is_some() {
+                    usb2can_b.set_configuration(&usb2can_conf)?;
                     self_test_one_way(&mut usb2can_b, &mut usb2can_a, filtering, extended_frame)?;
 
                     info!(
@@ -506,8 +514,6 @@ fn self_test_can_rates_frame_types_and_filtering(
                     );
                     self_test_one_way(&mut usb2can_a, &mut usb2can_b, filtering, extended_frame)?;
                 } else {
-                    let mut usb2can_b = usb2can_a.clone();
-
                     self_test_one_way(&mut usb2can_b, &mut usb2can_a, filtering, extended_frame)?;
                 };
             }
