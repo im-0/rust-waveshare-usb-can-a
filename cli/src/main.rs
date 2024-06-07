@@ -196,6 +196,7 @@ fn run_perf(args: &cli::Cli, options: &cli::PerfOptions) -> Result<()> {
     let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
         .set_serial_baud_rate(options.serial_baud_rate)
         .set_serial_receive_timeout(options.receive_timeout)
+        .set_frame_delay_multiplier(options.frame_delay_multiplier)?
         .open()
         .context("Failed to open USB2CAN device")?;
 
@@ -236,6 +237,10 @@ fn perf_receive(usb2can: &mut Usb2Can) -> Result<()> {
     let mut frames_missing = 0usize;
     let mut frames_corrupted = 0usize;
     let mut frames_ok = 0usize;
+
+    // Receive first frame to start measuring throughput.
+    let mut first_frame = Some(usb2can.receive()?);
+
     let started = Instant::now();
     let mut prev_report = started;
     loop {
@@ -258,7 +263,11 @@ fn perf_receive(usb2can: &mut Usb2Can) -> Result<()> {
             prev_report = now;
         }
 
-        let frame = usb2can.receive()?;
+        let frame = if let Some(frame) = first_frame.take() {
+            frame
+        } else {
+            usb2can.receive()?
+        };
 
         let frame_id = match frame.id() {
             Id::Standard(_) => {

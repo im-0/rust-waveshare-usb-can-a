@@ -176,6 +176,15 @@ pub(crate) struct PerfOptions {
     )]
     pub serial_baud_rate: SerialBaudRate,
 
+    /// Frame delay multiplier. The delay between frames is multiplied by this value.
+    #[arg(
+        short = 'd',
+        long,
+        value_name = "DELAY_MULTIPLIER",
+        default_value = "1.05"
+    )]
+    pub frame_delay_multiplier: f64,
+
     /// CAN bus baud rate. Supported values: 5000, 10000, 20000, 50000, 100000, 125000, 200000,
     /// 250000, 400000, 500000, 800000, 1000000.
     #[arg(
