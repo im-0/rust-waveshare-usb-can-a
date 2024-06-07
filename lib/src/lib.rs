@@ -596,9 +596,9 @@ pub struct Usb2Can {
 impl Usb2Can {
     const CONFIGURATION_DELAY: Duration = Duration::from_millis(100);
 
-    pub fn name(&self) -> Result<Option<String>> {
+    pub fn name(&self) -> Result<String> {
         self.lock_transmitter()
-            .map(|transmitter| transmitter.name())
+            .and_then(|transmitter| transmitter.name())
     }
 
     pub fn serial_receive_timeout(&self) -> Result<Duration> {
@@ -712,8 +712,10 @@ impl Transmitter {
         Self { serial }
     }
 
-    fn name(&self) -> Option<String> {
-        self.serial.name()
+    fn name(&self) -> Result<String> {
+        self.serial
+            .name()
+            .ok_or_else(|| Error::GetConfiguration("Failed to get serial port name".into()))
     }
 
     fn serial_baud_rate(&self) -> Result<SerialBaudRate> {
