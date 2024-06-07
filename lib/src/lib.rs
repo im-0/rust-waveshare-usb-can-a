@@ -109,9 +109,6 @@ pub enum Error {
 
     #[error("Received unexpected data: {0}")]
     RecvUnexpected(String),
-
-    #[error("Trying to send invalid frame: {0}")]
-    SendingInvalidFrame(String),
 }
 
 impl embedded_can::Error for Error {
