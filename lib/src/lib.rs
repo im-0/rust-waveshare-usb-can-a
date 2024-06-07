@@ -1092,7 +1092,7 @@ mod tests {
     proptest! {
         #[test]
         fn random_send_message_size_standard(
-                id in StandardId::ZERO.as_raw()..StandardId::MAX.as_raw(),
+                id in StandardId::ZERO.as_raw()..=StandardId::MAX.as_raw(),
                 data in vec(any::<u8>(), 0..=MAX_DATA_LENGTH),
         ) {
             let id = StandardId::new(id).expect("Logic error: proptest produced invalid standard ID");
@@ -1103,7 +1103,7 @@ mod tests {
 
         #[test]
         fn random_send_message_size_extended(
-                id in ExtendedId::ZERO.as_raw()..ExtendedId::MAX.as_raw(),
+                id in ExtendedId::ZERO.as_raw()..=ExtendedId::MAX.as_raw(),
                 data in vec(any::<u8>(), 0..=MAX_DATA_LENGTH),
         ) {
             let id = ExtendedId::new(id).expect("Logic error: proptest produced invalid extended ID");
@@ -1314,7 +1314,7 @@ mod tests {
     proptest! {
         #[test]
         fn random_serde_frame_standard(
-                id in StandardId::ZERO.as_raw()..StandardId::MAX.as_raw(),
+                id in StandardId::ZERO.as_raw()..=StandardId::MAX.as_raw(),
                 data in vec(any::<u8>(), 0..=MAX_DATA_LENGTH),
         ) {
             let id = StandardId::new(id).expect("Logic error: proptest produced invalid standard ID");
@@ -1324,7 +1324,7 @@ mod tests {
 
         #[test]
         fn random_serde_frame_extended(
-                id in ExtendedId::ZERO.as_raw()..ExtendedId::MAX.as_raw(),
+                id in ExtendedId::ZERO.as_raw()..=ExtendedId::MAX.as_raw(),
                 data in vec(any::<u8>(), 0..=MAX_DATA_LENGTH),
         ) {
             let id = ExtendedId::new(id).expect("Logic error: proptest produced invalid standard ID");
@@ -1333,7 +1333,7 @@ mod tests {
         }
 
         fn random_serde_frame_remote_standard(
-            id in StandardId::ZERO.as_raw()..StandardId::MAX.as_raw(),
+            id in StandardId::ZERO.as_raw()..=StandardId::MAX.as_raw(),
             dlc in 0..=MAX_DATA_LENGTH,
         ) {
             let id = StandardId::new(id).expect("Logic error: proptest produced invalid standard ID");
@@ -1342,7 +1342,7 @@ mod tests {
         }
 
         fn random_serde_frame_remote_extended(
-            id in ExtendedId::ZERO.as_raw()..ExtendedId::MAX.as_raw(),
+            id in ExtendedId::ZERO.as_raw()..=ExtendedId::MAX.as_raw(),
             dlc in 0..=MAX_DATA_LENGTH,
         ) {
             let id = ExtendedId::new(id).expect("Logic error: proptest produced invalid standard ID");
