@@ -39,8 +39,8 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 use waveshare_usb_can_a::{
-    CanBaudRate, Frame, SerialBaudRate, Usb2Can, Usb2CanConfiguration, DEFAULT_SERIAL_BAUD_RATE,
-    EXTENDED_ID_EXTRA_BITS,
+    CanBaudRate, Frame, SerialBaudRate, StoredIdFilter, Usb2Can, Usb2CanConfiguration,
+    DEFAULT_SERIAL_BAUD_RATE, EXTENDED_ID_EXTRA_BITS,
 };
 
 mod cli;
@@ -391,6 +391,12 @@ fn run_reset_to_factory_defaults(args: &cli::Cli) -> Result<()> {
         let mut usb2can_b = usb2can_a.clone();
 
         let frame = Frame::new_remote(StandardId::MAX, 0).expect("Logic error: bad test frame");
+
+        info!("Trying to disable stored ID filter...");
+        usb2can_a
+            .set_stored_id_filter(&StoredIdFilter::Disabled)
+            .context("Failed to disable stored ID filter")?;
+
         if check_echo(&mut usb2can_b, &mut usb2can_a, &frame, 1).is_ok() {
             info!(
                 "Adapter responded with serial baud rate {}",
@@ -430,10 +436,93 @@ fn run_self_test(args: &cli::Cli, options: &cli::SelfTestOptions) -> Result<()> 
         }
     );
 
+    self_test_stored_id_filter(args, options)?;
     self_test_can_rates_frame_types_and_filtering(args, options)?;
     self_test_serial_rates(args, options)?;
 
     info!("All tests passed successfully.");
+
+    Ok(())
+}
+
+fn self_test_stored_id_filter(args: &cli::Cli, options: &cli::SelfTestOptions) -> Result<()> {
+    info!("Testing stored ID filter...");
+
+    // Open USB2CAN adapter.
+    let usb2can_conf = Usb2CanConfiguration::new(CanBaudRate::R5kBd)
+        .set_loopback(options.second_serial_path.is_none())
+        .set_silent(options.second_serial_path.is_none() && !options.send_frames)
+        .set_automatic_retransmission(false);
+
+    let mut usb2can_a = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
+        .set_serial_baud_rate(options.first_serial_baud_rate)
+        .set_serial_receive_timeout(options.receive_timeout)
+        .open()
+        .context("Failed to open USB2CAN device")?;
+
+    let mut usb2can_b = if let Some(ref second_serial_path) = options.second_serial_path {
+        waveshare_usb_can_a::new(second_serial_path, &usb2can_conf)
+            .set_serial_baud_rate(options.second_serial_baud_rate)
+            .set_serial_receive_timeout(options.receive_timeout)
+            .open()
+            .context("Failed to open second USB2CAN device")?
+    } else {
+        usb2can_a.clone()
+    };
+
+    // Blocklist filter.
+    let filter = StoredIdFilter::BlockList(vec![ExtendedId::ZERO.into()]);
+    usb2can_a
+        .set_stored_id_filter(&filter)
+        .context("Failed to set blocklist filter")?;
+    if options.second_serial_path.is_some() {
+        usb2can_b
+            .set_stored_id_filter(&filter)
+            .context("Failed to set blocklist filter on second USB2CAN device")?;
+    }
+
+    self_test_one_way(&mut usb2can_b, &mut usb2can_a, true, true)?;
+    if options.second_serial_path.is_some() {
+        self_test_one_way(&mut usb2can_a, &mut usb2can_b, true, true)?;
+    }
+
+    // Allowlist filter.
+    let filter = StoredIdFilter::AllowList(vec![
+        ExtendedId::MAX.into(),
+        Id::Extended(
+            ExtendedId::new(ExtendedId::MAX.as_raw() ^ 0x0f).expect("Logic error: bad inverted ID"),
+        ),
+    ]);
+    usb2can_a
+        .set_stored_id_filter(&filter)
+        .context("Failed to set blocklist filter")?;
+    if options.second_serial_path.is_some() {
+        usb2can_b
+            .set_stored_id_filter(&filter)
+            .context("Failed to set blocklist filter on second USB2CAN device")?;
+    }
+
+    self_test_one_way(&mut usb2can_b, &mut usb2can_a, true, true)?;
+    if options.second_serial_path.is_some() {
+        self_test_one_way(&mut usb2can_a, &mut usb2can_b, true, true)?;
+    }
+
+    // Disable filter.
+    info!("Disabling stored ID filter...");
+    let filter = StoredIdFilter::Disabled;
+    usb2can_a
+        .set_stored_id_filter(&filter)
+        .context("Failed to set blocklist filter")?;
+    if options.second_serial_path.is_some() {
+        usb2can_b
+            .set_stored_id_filter(&filter)
+            .context("Failed to set blocklist filter on second USB2CAN device")?;
+    }
+
+    self_test_one_way(&mut usb2can_b, &mut usb2can_a, false, true)?;
+    if options.second_serial_path.is_some() {
+        self_test_one_way(&mut usb2can_a, &mut usb2can_b, false, true)?;
+    }
 
     Ok(())
 }

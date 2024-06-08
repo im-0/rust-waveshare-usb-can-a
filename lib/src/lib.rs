@@ -76,6 +76,9 @@ const PROTO_FIXED_TYPE_CFG_FLAG: u8 = 0b00000010;
 const PROTO_FIXED_TYPE_CFG_SET_SERIAL_BAUD_RATE_FLAG: u8 = 0b00000100;
 const PROTO_FIXED_TYPE_CFG_SET_VARIABLE_FLAG: u8 = 0b00010000;
 
+const PROTO_FIXED_TYPE_CFG_SET_STORED_ID_FILTER_FLAG: u8 = 0b00010000;
+const PROTO_FIXED_TYPE_CFG_SET_STORED_ID_FILTER_BLOCKLIST_FLAG: u8 = 0b00000001;
+
 const PROTO_FIXED_CFG_MODE_LOOPBACK_FLAG: u8 = 0b00000001;
 const PROTO_FIXED_CFG_MODE_SILENT_FLAG: u8 = 0b00000010;
 
@@ -91,6 +94,10 @@ const PROTO_FIXED_FRAME_REMOTE: u8 = 0x02;
 const PROTO_VARIABLE_FRAME_LENGTH_MASK: u8 = 0b00001111;
 
 const PROTO_VARIABLE_END: u8 = 0b01010101;
+
+const fn const_fn_max(a: usize, b: usize) -> usize {
+    [a, b][(a < b) as usize]
+}
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -628,8 +635,62 @@ impl From<CanBaudRate> for u32 {
     }
 }
 
-const fn const_fn_max(a: usize, b: usize) -> usize {
-    [a, b][(a < b) as usize]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoredIdFilter {
+    Disabled,
+    AllowList(Vec<Id>),
+    BlockList(Vec<Id>),
+}
+
+impl StoredIdFilter {
+    fn to_configuration_message(&self) -> Result<Vec<u8>> {
+        if self.to_ids().len() > u8::MAX as usize {
+            return Err(Error::SetConfiguration(format!(
+                "Stored ID filter list is too long (max {} IDs)",
+                u8::MAX
+            )));
+        }
+
+        let mut message = vec![
+            // Header
+            PROTO_HEADER,
+            PROTO_HEADER_TYPE_FIXED,
+            // Message type
+            self.to_config_value(),
+            // Number of IDs
+            self.to_ids().len() as u8,
+        ];
+
+        // Place IDs
+        for id in self.to_ids() {
+            let bytes = id_to_bytes(*id);
+            message.extend_from_slice(&bytes);
+        }
+
+        // Checksum (will be filled in later)
+        message.push(0x00);
+
+        fill_checksum(&mut message);
+        Ok(message)
+    }
+
+    const fn to_config_value(&self) -> u8 {
+        match self {
+            Self::Disabled | Self::BlockList(_) => {
+                PROTO_FIXED_TYPE_CFG_SET_STORED_ID_FILTER_FLAG
+                    | PROTO_FIXED_TYPE_CFG_SET_STORED_ID_FILTER_BLOCKLIST_FLAG
+            }
+
+            Self::AllowList(_) => PROTO_FIXED_TYPE_CFG_SET_STORED_ID_FILTER_FLAG,
+        }
+    }
+
+    fn to_ids(&self) -> &[Id] {
+        match self {
+            Self::Disabled => &[],
+            Self::AllowList(ids) | Self::BlockList(ids) => ids,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -735,6 +796,22 @@ impl Usb2Can {
         self.lock_transmitter().and_then(|mut transmitter| {
             transmitter.set_frame_delay_multiplier(frame_delay_multiplier)
         })
+    }
+
+    pub fn set_stored_id_filter(&mut self, filter: &StoredIdFilter) -> Result<()> {
+        debug!("Changing stored ID filter to {:?}...", filter);
+
+        let mut receiver_guard = self.lock_receiver()?;
+        let mut transmitter_guard = self.lock_transmitter()?;
+
+        let config_message = filter.to_configuration_message()?;
+        transmitter_guard.transmit_all(&config_message)?;
+        transmitter_guard.add_delay(CONFIGURATION_DELAY);
+
+        receiver_guard.clear()?;
+
+        debug!("Done changing stored ID filter!");
+        Ok(())
     }
 
     fn lock_configuration(&self) -> Result<MutexGuard<Usb2CanConfiguration>> {
@@ -2224,5 +2301,79 @@ mod tests {
             // https://en.wikipedia.org/wiki/CAN_bus#Bit_stuffing
             assert!(frame.length_bound_in_bits() <= 157 + 3);
         }
+    }
+
+    #[test]
+    fn stored_id_filter_disabled() {
+        let filter = StoredIdFilter::Disabled;
+        assert_eq!(
+            filter.to_configuration_message().unwrap(),
+            [
+                0xaa, 0x55, // Header
+                0x11, // Type
+                0x00, // Number of IDs
+                0x11, // Checksum
+            ]
+        );
+    }
+
+    #[test]
+    fn stored_id_filter_block_list() {
+        let filter = StoredIdFilter::BlockList(vec![ExtendedId::new(0x0ff1f2f3).unwrap().into()]);
+        assert_eq!(
+            filter.to_configuration_message().unwrap(),
+            [
+                0xaa, 0x55, // Header
+                0x11, // Type
+                0x01, // Number of IDs
+                0xf3, 0xf2, 0xf1, 0x0f, // ID
+                0xf7, // Checksum
+            ]
+        );
+
+        let filter = StoredIdFilter::BlockList(vec![
+            ExtendedId::new(0x0ff1f2f3).unwrap().into(),
+            ExtendedId::new(0x0ee1e2e3).unwrap().into(),
+        ]);
+        assert_eq!(
+            filter.to_configuration_message().unwrap(),
+            [
+                0xaa, 0x55, // Header
+                0x11, // Type
+                0x02, // Number of IDs
+                0xf3, 0xf2, 0xf1, 0x0f, // ID
+                0xe3, 0xe2, 0xe1, 0x0e, // ID
+                0xac, // Checksum
+            ]
+        );
+    }
+
+    #[test]
+    fn stored_id_filter_allow_list() {
+        let filter = StoredIdFilter::AllowList(vec![
+            ExtendedId::new(0x0ff1f2f3).unwrap().into(),
+            ExtendedId::new(0x0ee1e2e3).unwrap().into(),
+        ]);
+        assert_eq!(
+            filter.to_configuration_message().unwrap(),
+            [
+                0xaa, 0x55, // Header
+                0x10, // Type
+                0x02, // Number of IDs
+                0xf3, 0xf2, 0xf1, 0x0f, // ID
+                0xe3, 0xe2, 0xe1, 0x0e, // ID
+                0xab, // Checksum
+            ]
+        );
+    }
+
+    #[test]
+    fn stored_id_filter_disabled_is_empty_block_list() {
+        let filter_disabled = StoredIdFilter::Disabled;
+        let filter_empty_blocklist = StoredIdFilter::BlockList(vec![]);
+        assert_eq!(
+            filter_disabled.to_configuration_message().unwrap(),
+            filter_empty_blocklist.to_configuration_message().unwrap()
+        );
     }
 }
