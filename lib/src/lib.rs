@@ -777,6 +777,7 @@ impl Usb2Can {
 
         // Set the new baud rate on underlying serial interface.
         transmitter_guard.set_serial_baud_rate(serial_baud_rate)?;
+        receiver_guard.clear()?;
 
         debug!("Done changing serial baud rate!");
         Ok(())
