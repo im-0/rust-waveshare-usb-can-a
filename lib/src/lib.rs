@@ -765,7 +765,13 @@ impl blocking::Can for Usb2Can {
         let mut receiver_guard = self.lock_receiver()?;
         let configuration_guard = self.lock_configuration()?;
 
-        receiver_guard.receive_frame(configuration_guard.variable_encoding())
+        let result = receiver_guard.receive_frame(configuration_guard.variable_encoding());
+
+        if matches!(result, Err(Error::RecvUnexpected(_))) {
+            receiver_guard.resync();
+        }
+
+        result
     }
 }
 
@@ -916,9 +922,7 @@ impl Receiver {
                         break Ok(frame);
                     }
 
-                    error @ Err(Error::SerialReadTimedOut) => break error,
-
-                    Err(error) => {
+                    Err(error @ Error::RecvUnexpected(_)) => {
                         debug!("Failed to sync: {}", error);
 
                         if self.sync_attempts_left == 0 {
@@ -930,6 +934,8 @@ impl Receiver {
 
                         self.sync_attempts_left -= 1;
                     }
+
+                    Err(error) => break Err(error),
                 }
             }
         }
@@ -994,8 +1000,12 @@ impl Receiver {
     fn clear(&mut self) -> Result<()> {
         self.read_buffer.get_mut().clear(ClearBuffer::All)?;
         self.leftover.clear();
-        self.sync_attempts_left = SYNC_ATTEMPTS;
+        self.resync();
         Ok(())
+    }
+
+    fn resync(&mut self) {
+        self.sync_attempts_left = SYNC_ATTEMPTS;
     }
 
     fn delay(&self) {
