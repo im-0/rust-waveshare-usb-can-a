@@ -484,9 +484,13 @@ fn self_test_can_rates_frame_types_and_filtering(
                 for filtering in [false, true] {
                     let (filter, mask) = if filtering {
                         let id: Id = if extended_frame {
-                            ExtendedId::MAX.into()
+                            ExtendedId::new(0x0f0)
+                                .expect("Logic error: bad test ID")
+                                .into()
                         } else {
-                            StandardId::MAX.into()
+                            StandardId::new(0x0f0)
+                                .expect("Logic error: bad test ID")
+                                .into()
                         };
                         (id, id)
                     } else {
@@ -692,16 +696,45 @@ fn check_echo(
     frame: &Frame,
     num: usize,
 ) -> Result<()> {
-    for _ in 0..num {
-        transmit(usb2can_t, frame)?;
+    let inverted_frame = invert_frame(frame);
+
+    for i in 0..num {
+        let test_frame = if i % 2 == 0 { frame } else { &inverted_frame };
+
+        transmit(usb2can_t, test_frame)?;
     }
 
-    for _ in 0..num {
+    for i in 0..num {
         let received = receive(usb2can_r)?;
-        assert_eq!(frame, &received);
+
+        if i % 2 == 0 {
+            assert_eq!(frame, &received);
+        } else {
+            assert_eq!(inverted_frame, received);
+        }
     }
 
     Ok(())
+}
+
+fn invert_frame(frame: &Frame) -> Frame {
+    let data = frame.data().iter().map(|byte| !byte).collect::<Vec<_>>();
+
+    let id = match frame.id() {
+        Id::Standard(id) => {
+            Id::Standard(StandardId::new(id.as_raw() ^ 0x0f).expect("Logic error: bad inverted ID"))
+        }
+        Id::Extended(id) => {
+            Id::Extended(ExtendedId::new(id.as_raw() ^ 0x0f).expect("Logic error: bad inverted ID"))
+        }
+    };
+
+    if frame.is_data_frame() {
+        Frame::new(id, &data)
+    } else {
+        Frame::new_remote(id, frame.dlc())
+    }
+    .expect("Logic error: bad inverted frame")
 }
 
 fn transmit(usb2can: &mut Usb2Can, frame: &Frame) -> Result<()> {
