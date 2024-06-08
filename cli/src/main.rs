@@ -121,7 +121,7 @@ fn run_dump(args: &cli::Cli, options: &cli::DumpOptions) -> Result<()> {
             }
 
             (Err(error), _) => {
-                error!("{:?}", error)
+                error!("{}", error)
             }
         }
     }
@@ -239,7 +239,7 @@ fn perf_receive(usb2can: &mut Usb2Can) -> Result<()> {
     let mut frames_ok = 0usize;
 
     // Receive first frame to start measuring throughput.
-    let mut first_frame = Some(usb2can.receive()?);
+    let mut first_frame = Some(usb2can.receive());
 
     let started = Instant::now();
     let mut prev_report = started;
@@ -266,7 +266,17 @@ fn perf_receive(usb2can: &mut Usb2Can) -> Result<()> {
         let frame = if let Some(frame) = first_frame.take() {
             frame
         } else {
-            usb2can.receive()?
+            usb2can.receive()
+        };
+
+        let frame = match frame {
+            Ok(frame) => frame,
+
+            Err(error) => {
+                error!("Unable to receive frame: {}", error);
+                frames_corrupted += 1;
+                continue;
+            }
         };
 
         let frame_id = match frame.id() {
