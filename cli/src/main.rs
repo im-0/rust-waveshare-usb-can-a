@@ -80,7 +80,7 @@ fn run_dump(args: &cli::Cli, options: &cli::DumpOptions) -> Result<()> {
 
     // Open USB2CAN adapter.
     let usb2can_conf = Usb2CanConfiguration::new(options.can_baud_rate)
-        .set_fixed_encoding(options.fixed_encoding)
+        .set_variable_encoding(options.variable_encoding)
         .set_receive_only_extended_frames(options.receive_only_extended_frames);
 
     let usb2can_conf = if let Some(filter_with_mask) = &options.filter_with_mask {
@@ -157,7 +157,7 @@ fn run_inject(args: &cli::Cli, options: &cli::InjectOptions) -> Result<()> {
 
     // Open USB2CAN adapter.
     let usb2can_conf = Usb2CanConfiguration::new(options.can_baud_rate)
-        .set_fixed_encoding(options.fixed_encoding)
+        .set_variable_encoding(options.variable_encoding)
         .set_automatic_retransmission(options.automatic_retransmission);
 
     let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
@@ -193,7 +193,7 @@ fn run_perf(args: &cli::Cli, options: &cli::PerfOptions) -> Result<()> {
 
     // Open USB2CAN adapter.
     let usb2can_conf = Usb2CanConfiguration::new(options.can_baud_rate)
-        .set_fixed_encoding(options.fixed_encoding)
+        .set_variable_encoding(options.variable_encoding)
         .set_automatic_retransmission(false);
 
     let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
@@ -465,7 +465,7 @@ fn self_test_can_rates_frame_types_and_filtering(
         usb2can_a.clone()
     };
 
-    for fixed_encoding in [false, true] {
+    for variable_encoding in [false, true] {
         for can_baud_rate in [
             CanBaudRate::R5kBd,
             CanBaudRate::R10kBd,
@@ -504,14 +504,18 @@ fn self_test_can_rates_frame_types_and_filtering(
 
                     let usb2can_conf = usb2can_a
                         .configuration()?
-                        .set_fixed_encoding(fixed_encoding)
+                        .set_variable_encoding(variable_encoding)
                         .set_can_baud_rate(can_baud_rate)
                         .set_filter(filter, mask)?;
                     usb2can_a.set_configuration(&usb2can_conf)?;
 
                     info!(
                         "Running tests with {} encoding, CAN baud rate {}, {} frames, {}...",
-                        if fixed_encoding { "fixed" } else { "variable" },
+                        if variable_encoding {
+                            "variable"
+                        } else {
+                            "fixed"
+                        },
                         can_baud_rate,
                         if extended_frame {
                             "extended"
@@ -535,10 +539,10 @@ fn self_test_can_rates_frame_types_and_filtering(
 
                         info!(
                             "Running tests with {} encoding, baud rate {}, {} frames, {}, reverse...",
-                            if fixed_encoding {
-                                "fixed"
-                            } else {
+                            if variable_encoding {
                                 "variable"
+                            } else {
+                                "fixed"
                             },
                             can_baud_rate,
                             if extended_frame {

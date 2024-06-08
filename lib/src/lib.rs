@@ -249,7 +249,7 @@ pub fn new<'a>(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Usb2CanConfiguration {
-    fixed_encoding: bool,
+    variable_encoding: bool,
     can_baud_rate: CanBaudRate,
     receive_only_extended_frames: bool,
     filter: Id,
@@ -262,7 +262,7 @@ pub struct Usb2CanConfiguration {
 impl Usb2CanConfiguration {
     pub fn new(can_baud_rate: CanBaudRate) -> Self {
         Self {
-            fixed_encoding: false,
+            variable_encoding: false,
             can_baud_rate,
             receive_only_extended_frames: false,
             filter: ExtendedId::ZERO.into(),
@@ -273,13 +273,13 @@ impl Usb2CanConfiguration {
         }
     }
 
-    pub const fn fixed_encoding(&self) -> bool {
-        self.fixed_encoding
+    pub const fn variable_encoding(&self) -> bool {
+        self.variable_encoding
     }
 
     #[must_use]
-    pub const fn set_fixed_encoding(mut self, fixed_encoding: bool) -> Self {
-        self.fixed_encoding = fixed_encoding;
+    pub const fn set_variable_encoding(mut self, variable_encoding: bool) -> Self {
+        self.variable_encoding = variable_encoding;
         self
     }
 
@@ -362,12 +362,12 @@ impl Usb2CanConfiguration {
             PROTO_HEADER_TYPE_FIXED,
             // Encoding type
             PROTO_FIXED_TYPE_CFG_FLAG
-                | if self.fixed_encoding {
-                    // Use fixed length protocol to send and receive data
-                    0
-                } else {
+                | if self.variable_encoding {
                     // Use variable length protocol to send and receive data
                     PROTO_FIXED_TYPE_CFG_SET_VARIABLE_FLAG
+                } else {
+                    // Use fixed length protocol to send and receive data
+                    0
                 },
             // CAN bus speed
             self.can_baud_rate.to_config_value(),
@@ -750,10 +750,10 @@ impl blocking::Can for Usb2Can {
         let mut transmitter_guard = self.lock_transmitter()?;
         let configuration_guard = self.lock_configuration()?;
 
-        if configuration_guard.fixed_encoding() {
-            transmitter_guard.transmit_all(&frame.to_message_fixed())?;
-        } else {
+        if configuration_guard.variable_encoding() {
             transmitter_guard.transmit_all(&frame.to_message_variable())?;
+        } else {
+            transmitter_guard.transmit_all(&frame.to_message_fixed())?;
         }
 
         let delay_multipyer = transmitter_guard.frame_delay_multiplier();
@@ -771,7 +771,7 @@ impl blocking::Can for Usb2Can {
         let mut receiver_guard = self.lock_receiver()?;
         let configuration_guard = self.lock_configuration()?;
 
-        let result = receiver_guard.receive_frame(configuration_guard.fixed_encoding());
+        let result = receiver_guard.receive_frame(configuration_guard.variable_encoding());
 
         if matches!(result, Err(Error::RecvUnexpected(_))) {
             receiver_guard.resync();
@@ -912,12 +912,12 @@ impl Receiver {
             })
     }
 
-    fn receive_frame(&mut self, fixed: bool) -> Result<Frame> {
+    fn receive_frame(&mut self, variable: bool) -> Result<Frame> {
         if self.sync_attempts_left == 0 {
-            self.receive_frame_no_sync(fixed)
+            self.receive_frame_no_sync(variable)
         } else {
             loop {
-                match self.receive_frame_no_sync(fixed) {
+                match self.receive_frame_no_sync(variable) {
                     Ok(frame) => {
                         self.sync_attempts_left = 0;
                         break Ok(frame);
@@ -946,7 +946,7 @@ impl Receiver {
         })
     }
 
-    fn receive_frame_no_sync(&mut self, fixed: bool) -> Result<Frame> {
+    fn receive_frame_no_sync(&mut self, variable: bool) -> Result<Frame> {
         let mut received_bytes = Vec::with_capacity(MAX_MESSAGE_SIZE);
 
         let mut read_byte = || {
@@ -956,10 +956,10 @@ impl Receiver {
             })
         };
 
-        let result = if fixed {
-            FixedFrameReceiveState::read_frame(&mut read_byte)
-        } else {
+        let result = if variable {
             VariableFrameReceiveState::read_frame(&mut read_byte)
+        } else {
+            FixedFrameReceiveState::read_frame(&mut read_byte)
         };
 
         if result.is_err() && !received_bytes.is_empty() {
