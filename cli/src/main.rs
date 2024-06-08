@@ -67,6 +67,7 @@ fn main() -> Result<()> {
         cli::SubCommand::Inject(options) => run_inject(&args, options),
         cli::SubCommand::Perf(options) => run_perf(&args, options),
         cli::SubCommand::SetSerialBaudRate(options) => run_set_serial_baud_rate(&args, options),
+        cli::SubCommand::SetStoredIdFilter(options) => run_set_stored_id_filter(&args, options),
         cli::SubCommand::ResetToFactoryDefaults => run_reset_to_factory_defaults(&args),
         cli::SubCommand::SelfTest(options) => run_self_test(&args, options),
     }
@@ -357,6 +358,46 @@ fn run_set_serial_baud_rate(
     usb2can
         .set_serial_baud_rate(options.new_serial_baud_rate)
         .context("Failed to set new serial baud rate")?;
+
+    info!("Done!");
+    Ok(())
+}
+
+fn run_set_stored_id_filter(
+    args: &cli::Cli,
+    options: &cli::SetStoredIdFilterOptions,
+) -> Result<()> {
+    info!("Opening adapter...");
+
+    // Open USB2CAN adapter.
+    let usb2can_conf = Usb2CanConfiguration::new(CanBaudRate::R5kBd)
+        .set_loopback(true)
+        .set_silent(true);
+    let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
+        .set_serial_baud_rate(options.serial_baud_rate)
+        .open()
+        .context("Failed to open USB2CAN device")?;
+
+    let filter = match &options.filter_mode {
+        cli::SetStoredIdFilterSubCommand::Disabled => {
+            info!("Disabling filter...");
+            StoredIdFilter::Disabled
+        }
+
+        cli::SetStoredIdFilterSubCommand::Blocklist(ids) => {
+            info!("Configuring blocklist...");
+            StoredIdFilter::BlockList(ids.id.clone())
+        }
+
+        cli::SetStoredIdFilterSubCommand::Allowlist(ids) => {
+            info!("Configuring allowlist...");
+            StoredIdFilter::AllowList(ids.id.clone())
+        }
+    };
+    usb2can
+        .set_stored_id_filter(&filter)
+        .context("Failed to set new stored ID filter")?;
+    usb2can.delay()?;
 
     info!("Done!");
     Ok(())

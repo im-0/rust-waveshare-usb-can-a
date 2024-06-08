@@ -35,6 +35,10 @@ pub(crate) enum SubCommand {
     #[command()]
     SetSerialBaudRate(SetSerialBaudRateOptions),
 
+    /// Configure stored ID filtering. This type of filtering persists when adapter is powered off.
+    #[command()]
+    SetStoredIdFilter(SetStoredIdFilterOptions),
+
     /// Try to reset the adapter to factory defaults. This sets the serial baud rate to 2000000 Bd.
     #[command()]
     ResetToFactoryDefaults,
@@ -240,6 +244,47 @@ pub(crate) struct SetSerialBaudRateOptions {
         value_parser = parse_serial_baud_rate,
     )]
     pub new_serial_baud_rate: SerialBaudRate,
+}
+
+#[derive(Parser)]
+pub(crate) struct SetStoredIdFilterOptions {
+    /// Serial baud rate. Supported values: 9600, 19200, 38400, 115200, 1228800, 2000000.
+    #[arg(
+        short = 'b',
+        long,
+        value_name = "BAUD_RATE",
+        default_value = "2000000",
+        value_parser = parse_serial_baud_rate,
+    )]
+    pub serial_baud_rate: SerialBaudRate,
+
+    /// Disabled, block list or allow list.
+    #[command(subcommand)]
+    pub filter_mode: SetStoredIdFilterSubCommand,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum SetStoredIdFilterSubCommand {
+    /// Disable stored filter.
+    #[command()]
+    Disabled,
+
+    /// Blocklist.
+    #[command()]
+    Blocklist(StoredFilterIds),
+
+    /// Allowlist.
+    #[command()]
+    Allowlist(StoredFilterIds),
+}
+
+#[derive(Parser)]
+pub(crate) struct StoredFilterIds {
+    /// Frames to inject.
+    #[arg(
+        value_parser = parse_id,
+    )]
+    pub id: Vec<Id>,
 }
 
 #[derive(Parser)]

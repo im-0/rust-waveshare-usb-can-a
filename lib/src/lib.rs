@@ -25,7 +25,6 @@
 #![warn(clippy::type_repetition_in_bounds)]
 
 // TODO: Implement manual CAN bus baudrate selection (SJW, BS1, BS2, prescale).
-// TODO: Implement ID filtering configuration.
 
 use std::{
     borrow::Cow,
@@ -811,6 +810,18 @@ impl Usb2Can {
         receiver_guard.clear()?;
 
         debug!("Done changing stored ID filter!");
+        Ok(())
+    }
+
+    pub fn delay(&self) -> Result<()> {
+        debug!("Sleeping to remove receiver and transmitter delays...");
+
+        let receiver_guard = self.lock_receiver()?;
+        let transmitter_guard = self.lock_transmitter()?;
+
+        receiver_guard.delay();
+        transmitter_guard.delay();
+
         Ok(())
     }
 
