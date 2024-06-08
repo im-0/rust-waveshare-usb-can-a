@@ -21,7 +21,7 @@ default_features = false
 features = ["std"]
 
 [workspace.dependencies.clap]
-version = "4.5.4"
+version = "4.5.6"
 default_features = false
 features = ["cargo", "color", "derive", "error-context", "help", "std", "usage", "wrap_help"]
 
