@@ -218,6 +218,7 @@ impl Usb2CanBuilder {
 
         if with_blink_delay {
             let delay = self.serial_baud_rate.to_blink_delay();
+            debug!("Initial blink delay enabled: {:.03}s", delay.as_secs_f64());
             receiver.add_delay(delay);
             transmitter.add_delay(delay);
         };
@@ -650,6 +651,10 @@ impl Usb2Can {
     }
 
     pub fn set_serial_receive_timeout(&mut self, timeout: Duration) -> Result<()> {
+        debug!(
+            "Changing serial receive timeout to {:.03}s",
+            timeout.as_secs_f64()
+        );
         self.lock_receiver()
             .and_then(|mut receiver| receiver.set_receive_timeout(timeout))
     }
@@ -666,6 +671,8 @@ impl Usb2Can {
         &mut self,
         configuration: Option<Usb2CanConfiguration>,
     ) -> Result<()> {
+        debug!("Changing adapter configuration to {:?}...", configuration);
+
         let mut receiver_guard = self.lock_receiver()?;
         let mut transmitter_guard = self.lock_transmitter()?;
         let mut configuration_guard = self.lock_configuration()?;
@@ -685,6 +692,7 @@ impl Usb2Can {
         receiver_guard.add_delay(CONFIGURATION_DELAY);
         transmitter_guard.add_delay(CONFIGURATION_DELAY);
 
+        debug!("Done changing adapter configuration!");
         Ok(())
     }
 
@@ -693,6 +701,8 @@ impl Usb2Can {
     }
 
     pub fn set_serial_baud_rate(&mut self, serial_baud_rate: SerialBaudRate) -> Result<()> {
+        debug!("Changing serial baud rate to {}...", serial_baud_rate);
+
         let mut receiver_guard = self.lock_receiver()?;
         let mut transmitter_guard = self.lock_transmitter()?;
 
@@ -706,7 +716,10 @@ impl Usb2Can {
         transmitter_guard.add_delay(delay);
 
         // Set the new baud rate on underlying serial interface.
-        transmitter_guard.set_serial_baud_rate(serial_baud_rate)
+        transmitter_guard.set_serial_baud_rate(serial_baud_rate)?;
+
+        debug!("Done changing serial baud rate!");
+        Ok(())
     }
 
     pub fn frame_delay_multiplier(&self) -> Result<f64> {
@@ -715,6 +728,10 @@ impl Usb2Can {
     }
 
     pub fn set_frame_delay_multiplier(&mut self, frame_delay_multiplier: f64) -> Result<()> {
+        debug!(
+            "Changing frame delay multiplier to {:.03}...",
+            frame_delay_multiplier
+        );
         self.lock_transmitter().and_then(|mut transmitter| {
             transmitter.set_frame_delay_multiplier(frame_delay_multiplier)
         })
@@ -773,9 +790,11 @@ impl blocking::Can for Usb2Can {
 
         let result = receiver_guard.receive_frame(configuration_guard.variable_encoding());
 
-        if matches!(result, Err(Error::RecvUnexpected(_))) {
+        if let Ok(frame) = &result {
+            trace!("Received frame: {:?}", frame);
+        } else if matches!(result, Err(Error::RecvUnexpected(_))) {
             receiver_guard.resync();
-        }
+        };
 
         result
     }
@@ -940,10 +959,6 @@ impl Receiver {
                 }
             }
         }
-        .map(|frame| {
-            trace!("Received frame: {:?}", frame);
-            frame
-        })
     }
 
     fn receive_frame_no_sync(&mut self, variable: bool) -> Result<Frame> {
