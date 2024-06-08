@@ -80,6 +80,7 @@ fn run_dump(args: &cli::Cli, options: &cli::DumpOptions) -> Result<()> {
 
     // Open USB2CAN adapter.
     let usb2can_conf = Usb2CanConfiguration::new(options.can_baud_rate)
+        .set_fixed_encoding(options.fixed_encoding)
         .set_receive_only_extended_frames(options.receive_only_extended_frames);
 
     let usb2can_conf = if let Some(filter_with_mask) = &options.filter_with_mask {
@@ -156,6 +157,7 @@ fn run_inject(args: &cli::Cli, options: &cli::InjectOptions) -> Result<()> {
 
     // Open USB2CAN adapter.
     let usb2can_conf = Usb2CanConfiguration::new(options.can_baud_rate)
+        .set_fixed_encoding(options.fixed_encoding)
         .set_automatic_retransmission(options.automatic_retransmission);
 
     let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
@@ -190,8 +192,9 @@ fn run_perf(args: &cli::Cli, options: &cli::PerfOptions) -> Result<()> {
     );
 
     // Open USB2CAN adapter.
-    let usb2can_conf =
-        Usb2CanConfiguration::new(options.can_baud_rate).set_automatic_retransmission(false);
+    let usb2can_conf = Usb2CanConfiguration::new(options.can_baud_rate)
+        .set_fixed_encoding(options.fixed_encoding)
+        .set_automatic_retransmission(false);
 
     let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
         .set_serial_baud_rate(options.serial_baud_rate)
@@ -462,64 +465,49 @@ fn self_test_can_rates_frame_types_and_filtering(
         usb2can_a.clone()
     };
 
-    for can_baud_rate in [
-        CanBaudRate::R5kBd,
-        CanBaudRate::R10kBd,
-        CanBaudRate::R20kBd,
-        CanBaudRate::R50kBd,
-        CanBaudRate::R100kBd,
-        CanBaudRate::R125kBd,
-        CanBaudRate::R200kBd,
-        CanBaudRate::R250kBd,
-        CanBaudRate::R400kBd,
-        CanBaudRate::R500kBd,
-        CanBaudRate::R800kBd,
-        CanBaudRate::R1000kBd,
-    ] {
-        for extended_frame in [false, true] {
-            for filtering in [false, true] {
-                let (filter, mask) = if filtering {
-                    let id: Id = if extended_frame {
-                        ExtendedId::MAX.into()
+    for fixed_encoding in [false, true] {
+        for can_baud_rate in [
+            CanBaudRate::R5kBd,
+            CanBaudRate::R10kBd,
+            CanBaudRate::R20kBd,
+            CanBaudRate::R50kBd,
+            CanBaudRate::R100kBd,
+            CanBaudRate::R125kBd,
+            CanBaudRate::R200kBd,
+            CanBaudRate::R250kBd,
+            CanBaudRate::R400kBd,
+            CanBaudRate::R500kBd,
+            CanBaudRate::R800kBd,
+            CanBaudRate::R1000kBd,
+        ] {
+            for extended_frame in [false, true] {
+                for filtering in [false, true] {
+                    let (filter, mask) = if filtering {
+                        let id: Id = if extended_frame {
+                            ExtendedId::MAX.into()
+                        } else {
+                            StandardId::MAX.into()
+                        };
+                        (id, id)
                     } else {
-                        StandardId::MAX.into()
+                        let id: Id = if extended_frame {
+                            ExtendedId::ZERO.into()
+                        } else {
+                            StandardId::ZERO.into()
+                        };
+                        (id, id)
                     };
-                    (id, id)
-                } else {
-                    let id: Id = if extended_frame {
-                        ExtendedId::ZERO.into()
-                    } else {
-                        StandardId::ZERO.into()
-                    };
-                    (id, id)
-                };
 
-                let usb2can_conf = usb2can_a
-                    .configuration()?
-                    .set_can_baud_rate(can_baud_rate)
-                    .set_filter(filter, mask)?;
-                usb2can_a.set_configuration(&usb2can_conf)?;
-
-                info!(
-                    "Running tests with CAN baud rate {}, {} frames, {}...",
-                    can_baud_rate,
-                    if extended_frame {
-                        "extended"
-                    } else {
-                        "standard"
-                    },
-                    if filtering {
-                        "with filtering"
-                    } else {
-                        "without filtering"
-                    }
-                );
-                if options.second_serial_path.is_some() {
-                    usb2can_b.set_configuration(&usb2can_conf)?;
-                    self_test_one_way(&mut usb2can_b, &mut usb2can_a, filtering, extended_frame)?;
+                    let usb2can_conf = usb2can_a
+                        .configuration()?
+                        .set_fixed_encoding(fixed_encoding)
+                        .set_can_baud_rate(can_baud_rate)
+                        .set_filter(filter, mask)?;
+                    usb2can_a.set_configuration(&usb2can_conf)?;
 
                     info!(
-                        "Running tests with baud rate {}, {} frames, {}, reverse...",
+                        "Running tests with {} encoding, CAN baud rate {}, {} frames, {}...",
+                        if fixed_encoding { "fixed" } else { "variable" },
                         can_baud_rate,
                         if extended_frame {
                             "extended"
@@ -532,10 +520,49 @@ fn self_test_can_rates_frame_types_and_filtering(
                             "without filtering"
                         }
                     );
-                    self_test_one_way(&mut usb2can_a, &mut usb2can_b, filtering, extended_frame)?;
-                } else {
-                    self_test_one_way(&mut usb2can_b, &mut usb2can_a, filtering, extended_frame)?;
-                };
+                    if options.second_serial_path.is_some() {
+                        usb2can_b.set_configuration(&usb2can_conf)?;
+                        self_test_one_way(
+                            &mut usb2can_b,
+                            &mut usb2can_a,
+                            filtering,
+                            extended_frame,
+                        )?;
+
+                        info!(
+                            "Running tests with {} encoding, baud rate {}, {} frames, {}, reverse...",
+                            if fixed_encoding {
+                                "fixed"
+                            } else {
+                                "variable"
+                            },
+                            can_baud_rate,
+                            if extended_frame {
+                                "extended"
+                            } else {
+                                "standard"
+                            },
+                            if filtering {
+                                "with filtering"
+                            } else {
+                                "without filtering"
+                            }
+                        );
+                        self_test_one_way(
+                            &mut usb2can_a,
+                            &mut usb2can_b,
+                            filtering,
+                            extended_frame,
+                        )?;
+                    } else {
+                        self_test_one_way(
+                            &mut usb2can_b,
+                            &mut usb2can_a,
+                            filtering,
+                            extended_frame,
+                        )?;
+                    };
+                }
             }
         }
     }

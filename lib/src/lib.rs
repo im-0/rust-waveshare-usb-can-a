@@ -249,7 +249,7 @@ pub fn new<'a>(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Usb2CanConfiguration {
-    variable_encoding: bool,
+    fixed_encoding: bool,
     can_baud_rate: CanBaudRate,
     receive_only_extended_frames: bool,
     filter: Id,
@@ -262,7 +262,7 @@ pub struct Usb2CanConfiguration {
 impl Usb2CanConfiguration {
     pub fn new(can_baud_rate: CanBaudRate) -> Self {
         Self {
-            variable_encoding: false,
+            fixed_encoding: false,
             can_baud_rate,
             receive_only_extended_frames: false,
             filter: ExtendedId::ZERO.into(),
@@ -273,13 +273,13 @@ impl Usb2CanConfiguration {
         }
     }
 
-    pub const fn variable_encoding(&self) -> bool {
-        self.variable_encoding
+    pub const fn fixed_encoding(&self) -> bool {
+        self.fixed_encoding
     }
 
     #[must_use]
-    pub const fn set_variable_encoding(mut self, variable_encoding: bool) -> Self {
-        self.variable_encoding = variable_encoding;
+    pub const fn set_fixed_encoding(mut self, fixed_encoding: bool) -> Self {
+        self.fixed_encoding = fixed_encoding;
         self
     }
 
@@ -356,18 +356,18 @@ impl Usb2CanConfiguration {
         let filter = id_to_bytes(self.filter);
         let mask = id_to_bytes(self.mask);
 
-        [
+        let mut message = [
             // Header
             PROTO_HEADER,
             PROTO_HEADER_TYPE_FIXED,
             // Encoding type
             PROTO_FIXED_TYPE_CFG_FLAG
-                | if self.variable_encoding {
-                    // Use variable length protocol to send and receive data
-                    PROTO_FIXED_TYPE_CFG_SET_VARIABLE_FLAG
-                } else {
+                | if self.fixed_encoding {
                     // Use fixed length protocol to send and receive data
                     0
+                } else {
+                    // Use variable length protocol to send and receive data
+                    PROTO_FIXED_TYPE_CFG_SET_VARIABLE_FLAG
                 },
             // CAN bus speed
             self.can_baud_rate.to_config_value(),
@@ -410,7 +410,10 @@ impl Usb2CanConfiguration {
             0x00,
             // Checksum (will be filled in later)
             0x00,
-        ]
+        ];
+
+        fill_checksum(&mut message);
+        message
     }
 }
 
@@ -438,8 +441,8 @@ impl SerialBaudRate {
         BLINK_DELAY * blinks
     }
 
-    const fn to_configuration_message(self) -> [u8; MAX_FIXED_MESSAGE_SIZE] {
-        [
+    fn to_configuration_message(self) -> [u8; MAX_FIXED_MESSAGE_SIZE] {
+        let mut message = [
             // Header
             PROTO_HEADER,
             PROTO_HEADER_TYPE_FIXED,
@@ -465,7 +468,10 @@ impl SerialBaudRate {
             0x00,
             // Checksum (will be filled in later)
             0x00,
-        ]
+        ];
+
+        fill_checksum(&mut message);
+        message
     }
 
     const fn to_config_value(self) -> u8 {
@@ -664,7 +670,7 @@ impl Usb2Can {
         let mut transmitter_guard = self.lock_transmitter()?;
         let mut configuration_guard = self.lock_configuration()?;
 
-        let mut config_message = if let Some(configuration) = configuration {
+        let config_message = if let Some(configuration) = configuration {
             let config_message = configuration.to_configuration_message();
             *configuration_guard = configuration;
             config_message
@@ -673,7 +679,7 @@ impl Usb2Can {
         };
 
         receiver_guard.clear()?;
-        transmitter_guard.fill_checksum_and_transmit_all(&mut config_message)?;
+        transmitter_guard.transmit_all(&config_message)?;
 
         // Adapter needs some time to process the configuration change.
         receiver_guard.add_delay(CONFIGURATION_DELAY);
@@ -690,8 +696,8 @@ impl Usb2Can {
         let mut receiver_guard = self.lock_receiver()?;
         let mut transmitter_guard = self.lock_transmitter()?;
 
-        let mut config_message = serial_baud_rate.to_configuration_message();
-        transmitter_guard.fill_checksum_and_transmit_all(&mut config_message)?;
+        let config_message = serial_baud_rate.to_configuration_message();
+        transmitter_guard.transmit_all(&config_message)?;
 
         // Adapater does not respond while blinking.
         let delay = serial_baud_rate.to_blink_delay();
@@ -744,10 +750,10 @@ impl blocking::Can for Usb2Can {
         let mut transmitter_guard = self.lock_transmitter()?;
         let configuration_guard = self.lock_configuration()?;
 
-        if configuration_guard.variable_encoding() {
-            transmitter_guard.transmit_all(&frame.to_message_variable())?;
+        if configuration_guard.fixed_encoding() {
+            transmitter_guard.transmit_all(&frame.to_message_fixed())?;
         } else {
-            transmitter_guard.fill_checksum_and_transmit_all(&mut frame.to_message_fixed())?;
+            transmitter_guard.transmit_all(&frame.to_message_variable())?;
         }
 
         let delay_multipyer = transmitter_guard.frame_delay_multiplier();
@@ -765,7 +771,7 @@ impl blocking::Can for Usb2Can {
         let mut receiver_guard = self.lock_receiver()?;
         let configuration_guard = self.lock_configuration()?;
 
-        let result = receiver_guard.receive_frame(configuration_guard.variable_encoding());
+        let result = receiver_guard.receive_frame(configuration_guard.fixed_encoding());
 
         if matches!(result, Err(Error::RecvUnexpected(_))) {
             receiver_guard.resync();
@@ -836,21 +842,6 @@ impl Transmitter {
         }
     }
 
-    fn fill_checksum_and_transmit_all(&mut self, message: &mut [u8]) -> Result<()> {
-        Self::fill_checksum(message);
-        self.transmit_all(message)
-    }
-
-    fn fill_checksum(message: &mut [u8]) {
-        message[message.len() - 1] = Self::generate_checksum(message);
-    }
-
-    fn generate_checksum(message: &mut [u8]) -> u8 {
-        message[2..message.len() - 1]
-            .iter()
-            .fold(0u8, |acc, &x| acc.wrapping_add(x))
-    }
-
     fn transmit_all(&mut self, message: &[u8]) -> Result<()> {
         self.delay();
         trace!("Writing into serial: {:?}", message);
@@ -879,6 +870,16 @@ impl Transmitter {
             self.ready_at += delay;
         }
     }
+}
+
+fn fill_checksum(message: &mut [u8]) {
+    message[message.len() - 1] = generate_checksum(message);
+}
+
+fn generate_checksum(message: &mut [u8]) -> u8 {
+    message[2..message.len() - 1]
+        .iter()
+        .fold(0u8, |acc, &x| acc.wrapping_add(x))
 }
 
 struct Receiver {
@@ -911,12 +912,12 @@ impl Receiver {
             })
     }
 
-    fn receive_frame(&mut self, variable: bool) -> Result<Frame> {
+    fn receive_frame(&mut self, fixed: bool) -> Result<Frame> {
         if self.sync_attempts_left == 0 {
-            self.receive_frame_no_sync(variable)
+            self.receive_frame_no_sync(fixed)
         } else {
             loop {
-                match self.receive_frame_no_sync(variable) {
+                match self.receive_frame_no_sync(fixed) {
                     Ok(frame) => {
                         self.sync_attempts_left = 0;
                         break Ok(frame);
@@ -945,7 +946,7 @@ impl Receiver {
         })
     }
 
-    fn receive_frame_no_sync(&mut self, variable: bool) -> Result<Frame> {
+    fn receive_frame_no_sync(&mut self, fixed: bool) -> Result<Frame> {
         let mut received_bytes = Vec::with_capacity(MAX_MESSAGE_SIZE);
 
         let mut read_byte = || {
@@ -955,10 +956,10 @@ impl Receiver {
             })
         };
 
-        let result = if variable {
-            VariableFrameReceiveState::read_frame(&mut read_byte)
-        } else {
+        let result = if fixed {
             FixedFrameReceiveState::read_frame(&mut read_byte)
+        } else {
+            VariableFrameReceiveState::read_frame(&mut read_byte)
         };
 
         if result.is_err() && !received_bytes.is_empty() {
@@ -1037,7 +1038,8 @@ enum FixedFrameReceiveState {
     StandardOrExtended,
     DataOrRemote { extended: bool },
     Id { bytes_left: usize, frame: Frame },
-    DataLength { frame: Frame },
+    SkipUnusedId { bytes_left: usize, frame: Frame },
+    DataLength(Frame),
     Data { byte_n: usize, frame: Frame },
     Skip { bytes_left: usize, frame: Frame },
     Reserved(Frame),
@@ -1059,7 +1061,8 @@ impl FixedFrameReceiveState {
                 | Self::StandardOrExtended
                 | Self::DataOrRemote { .. }
                 | Self::Id { .. }
-                | Self::DataLength { .. }
+                | Self::SkipUnusedId { .. }
+                | Self::DataLength(_)
                 | Self::Data { .. }
                 | Self::Skip { .. }
                 | Self::Reserved { .. } => {
@@ -1128,7 +1131,7 @@ impl FixedFrameReceiveState {
                     data: FrameData::Data(Vec::with_capacity(MAX_DATA_LENGTH)),
                 }}
             } else {
-                Self::Id { bytes_left: 3, frame: Frame {
+                Self::Id { bytes_left: 1, frame: Frame {
                     id: StandardId::ZERO.into(),
                     data: FrameData::Data(Vec::with_capacity(MAX_DATA_LENGTH)),
                 }}
@@ -1139,7 +1142,7 @@ impl FixedFrameReceiveState {
                     data: FrameData::Remote(0),
                 }}
             } else {
-                Self::Id { bytes_left: 3, frame: Frame {
+                Self::Id { bytes_left: 1, frame: Frame {
                     id: StandardId::ZERO.into(),
                     data: FrameData::Remote(0),
                 }}
@@ -1161,7 +1164,11 @@ impl FixedFrameReceiveState {
                 frame.add_byte_to_id(bytes_left, byte)?;
 
                 if bytes_left == 0 {
-                    Self::DataLength { frame }
+                    if frame.is_extended() {
+                        Self::DataLength(frame)
+                    } else {
+                        Self::SkipUnusedId { bytes_left: 2, frame }
+                    }
                 } else {
                     Self::Id {
                         bytes_left: bytes_left - 1,
@@ -1171,9 +1178,28 @@ impl FixedFrameReceiveState {
             }
 
             (
-                Self::DataLength {
-                    mut frame,
+                Self::SkipUnusedId {
+                    mut bytes_left,
+                    frame,
                 },
+                0, // Unused fields: standard frame, thus need to skip unused two zeros.
+            ) => {
+                bytes_left -= 1;
+                if bytes_left == 0 {
+                    Self::DataLength(frame)
+                } else {
+                    Self::SkipUnusedId { bytes_left, frame }
+                }
+            }
+            (Self::SkipUnusedId { .. }, byte) => {
+                return Err(Error::RecvUnexpected(format!(
+                    "Expected unused ID byte, received 0x{:02x} (!= 0x00)",
+                    byte
+                )))
+            }
+
+            (
+                Self::DataLength(mut frame),
                 byte,
             ) if byte as usize <= MAX_DATA_LENGTH => {
                 match frame.data {
@@ -1444,7 +1470,7 @@ impl Frame {
         let id = id_to_bytes(self.id);
 
         #[allow(clippy::get_first)]
-        [
+        let mut message = [
             // Header
             PROTO_HEADER,
             PROTO_HEADER_TYPE_FIXED,
@@ -1482,7 +1508,10 @@ impl Frame {
             0x00,
             // Checksum (will be filled in later)
             0x00,
-        ]
+        ];
+
+        fill_checksum(&mut message);
+        message
     }
 
     fn to_message_variable(&self) -> Vec<u8> {
@@ -1794,6 +1823,54 @@ mod tests {
     }
 
     #[test]
+    fn fixed_standard_data_frame() {
+        let frame = Frame::new(
+            StandardId::new(0x123).unwrap(),
+            &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88],
+        )
+        .unwrap();
+        let message = frame.to_message_fixed();
+        assert_eq!(
+            message,
+            [
+                0xaa, 0x55, // Header
+                0x01, // This is normal data or remote frame
+                0x01, // Frame type: standard or extended
+                0x01, // Frame type: data or remote
+                0x23, 0x01, 0x00, 0x00, // Frame ID
+                0x08, // Data length
+                0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, // Data
+                0x00, // Reserved
+                0x93, // Checksum
+            ]
+        );
+    }
+
+    #[test]
+    fn fixed_extended_data_frame() {
+        let frame = Frame::new(
+            ExtendedId::new(0x12345678).unwrap(),
+            &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
+        )
+        .unwrap();
+        let message = frame.to_message_fixed();
+        assert_eq!(
+            message,
+            [
+                0xaa, 0x55, // Header
+                0x01, // This is normal data or remote frame
+                0x02, // Frame type: standard or extended
+                0x01, // Frame type: data or remote
+                0x78, 0x56, 0x34, 0x12, // Frame ID
+                0x08, // Data length
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, // Data
+                0x00, // Reserved
+                0x44, // Checksum
+            ]
+        );
+    }
+
+    #[test]
     fn variable_standard_data_frame_short() {
         let frame = Frame::new(StandardId::MAX, &[]).unwrap();
         let message = frame.to_message_variable();
@@ -1961,6 +2038,42 @@ mod tests {
         check_variable_serialize_deserialize_frame(&frame);
     }
 
+    #[test]
+    fn fixed_serde_frame_standard() {
+        let frame = Frame::new(StandardId::MAX, &[0, 1, 2, 3, 4, 5, 6, 7]).unwrap();
+        check_fixed_serialize_deserialize_frame(&frame);
+
+        let frame = Frame::new(StandardId::MAX, &[]).unwrap();
+        check_fixed_serialize_deserialize_frame(&frame);
+    }
+
+    #[test]
+    fn fixed_serde_frame_extended() {
+        let frame = Frame::new(ExtendedId::MAX, &[0, 1, 2, 3, 4, 5, 6, 7]).unwrap();
+        check_fixed_serialize_deserialize_frame(&frame);
+
+        let frame = Frame::new(ExtendedId::MAX, &[]).unwrap();
+        check_fixed_serialize_deserialize_frame(&frame);
+    }
+
+    #[test]
+    fn fixed_serde_frame_remote_standard() {
+        let frame = Frame::new_remote(StandardId::MAX, MAX_DATA_LENGTH).unwrap();
+        check_fixed_serialize_deserialize_frame(&frame);
+
+        let frame = Frame::new_remote(StandardId::MAX, 0).unwrap();
+        check_fixed_serialize_deserialize_frame(&frame);
+    }
+
+    #[test]
+    fn fixed_serde_frame_remote_extended() {
+        let frame = Frame::new_remote(ExtendedId::MAX, MAX_DATA_LENGTH).unwrap();
+        check_fixed_serialize_deserialize_frame(&frame);
+
+        let frame = Frame::new_remote(ExtendedId::MAX, 0).unwrap();
+        check_fixed_serialize_deserialize_frame(&frame);
+    }
+
     proptest! {
         #[test]
         fn variable_random_serde_frame_standard(
@@ -2001,6 +2114,46 @@ mod tests {
         }
     }
 
+    proptest! {
+        #[test]
+        fn fixed_random_serde_frame_standard(
+                id in StandardId::ZERO.as_raw()..=StandardId::MAX.as_raw(),
+                data in vec(any::<u8>(), 0..=MAX_DATA_LENGTH),
+        ) {
+            let id = StandardId::new(id).expect("Logic error: proptest produced invalid standard ID");
+            let frame = Frame::new(id, &data).unwrap();
+            check_fixed_serialize_deserialize_frame(&frame);
+        }
+
+        #[test]
+        fn fixed_random_serde_frame_extended(
+                id in ExtendedId::ZERO.as_raw()..=ExtendedId::MAX.as_raw(),
+                data in vec(any::<u8>(), 0..=MAX_DATA_LENGTH),
+        ) {
+            let id = ExtendedId::new(id).expect("Logic error: proptest produced invalid standard ID");
+            let frame = Frame::new(id, &data).unwrap();
+            check_fixed_serialize_deserialize_frame(&frame);
+        }
+
+        fn fixed_random_serde_frame_remote_standard(
+            id in StandardId::ZERO.as_raw()..=StandardId::MAX.as_raw(),
+            dlc in 0..=MAX_DATA_LENGTH,
+        ) {
+            let id = StandardId::new(id).expect("Logic error: proptest produced invalid standard ID");
+            let frame = Frame::new_remote(id, dlc).unwrap();
+            check_fixed_serialize_deserialize_frame(&frame);
+        }
+
+        fn fixed_random_serde_frame_remote_extended(
+            id in ExtendedId::ZERO.as_raw()..=ExtendedId::MAX.as_raw(),
+            dlc in 0..=MAX_DATA_LENGTH,
+        ) {
+            let id = ExtendedId::new(id).expect("Logic error: proptest produced invalid standard ID");
+            let frame = Frame::new_remote(id, dlc).unwrap();
+            check_fixed_serialize_deserialize_frame(&frame);
+        }
+    }
+
     // TODO: Test serialization and deserialization with injected errors.
 
     fn check_variable_serialize_deserialize_frame(frame: &Frame) {
@@ -2010,6 +2163,17 @@ mod tests {
         let received_frame = VariableFrameReceiveState::read_frame(&mut reader_fn).unwrap();
 
         assert_eq!(reader_fn().unwrap(), PROTO_VARIABLE_END);
+        assert!(reader_fn().is_err());
+
+        assert_eq!(frame, &received_frame);
+    }
+
+    fn check_fixed_serialize_deserialize_frame(frame: &Frame) {
+        let message = frame.to_message_fixed();
+        let mut reader_fn = into_reader_fn(message.to_vec());
+
+        let received_frame = FixedFrameReceiveState::read_frame(&mut reader_fn).unwrap();
+
         assert!(reader_fn().is_err());
 
         assert_eq!(frame, &received_frame);

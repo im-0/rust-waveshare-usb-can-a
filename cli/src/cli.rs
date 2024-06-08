@@ -94,6 +94,10 @@ pub(crate) struct DumpOptions {
     )]
     pub serial_baud_rate: SerialBaudRate,
 
+    /// Use fixed protocol encoding when talking with the adapter.
+    #[arg(short = 'f', long)]
+    pub fixed_encoding: bool,
+
     /// CAN bus baud rate. Supported values: 5000, 10000, 20000, 50000, 100000, 125000, 200000,
     /// 250000, 400000, 500000, 800000, 1000000.
     #[arg(
@@ -136,6 +140,10 @@ pub(crate) struct InjectOptions {
         default_value = "1.05"
     )]
     pub frame_delay_multiplier: f64,
+
+    /// Use fixed protocol encoding when talking with the adapter.
+    #[arg(short = 'f', long)]
+    pub fixed_encoding: bool,
 
     /// CAN bus baud rate. Supported values: 5000, 10000, 20000, 50000, 100000, 125000, 200000,
     /// 250000, 400000, 500000, 800000, 1000000.
@@ -184,6 +192,10 @@ pub(crate) struct PerfOptions {
         default_value = "1.05"
     )]
     pub frame_delay_multiplier: f64,
+
+    /// Use fixed protocol encoding when talking with the adapter.
+    #[arg(short = 'f', long)]
+    pub fixed_encoding: bool,
 
     /// CAN bus baud rate. Supported values: 5000, 10000, 20000, 50000, 100000, 125000, 200000,
     /// 250000, 400000, 500000, 800000, 1000000.
