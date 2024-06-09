@@ -25,6 +25,7 @@
 #![warn(clippy::type_repetition_in_bounds)]
 
 // TODO: Implement manual CAN bus baudrate selection (SJW, BS1, BS2, prescale).
+// TODO: Serial timeout is both for read and write.
 
 use std::{
     borrow::Cow,
@@ -845,7 +846,7 @@ impl Usb2Can {
     }
 }
 
-// TODO: Nonblocking.
+// TODO: Add async variant.
 impl blocking::Can for Usb2Can {
     type Frame = Frame;
     type Error = Error;
