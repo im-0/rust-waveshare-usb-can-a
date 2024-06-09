@@ -25,7 +25,6 @@
 #![warn(clippy::type_repetition_in_bounds)]
 
 // TODO: Implement manual CAN bus baudrate selection (SJW, BS1, BS2, prescale).
-// TODO: Serial timeout is both for read and write.
 
 use std::{
     borrow::Cow,
@@ -42,6 +41,10 @@ use embedded_can::{blocking, ExtendedId, Frame as _, Id, StandardId};
 use serialport::{ClearBuffer, DataBits, SerialPort, StopBits};
 use thiserror::Error;
 use tracing::{debug, trace};
+
+// Not really infinite...
+// TODO: Fix rust-serialport to allow blocking mode.
+const INFINITE_TIMEOUT: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 100);
 
 pub const DEFAULT_SERIAL_BAUD_RATE: SerialBaudRate = SerialBaudRate::R2000000Bd;
 pub const DEFAULT_SERIAL_RECEIVE_TIMEOUT: Duration = Duration::from_millis(1000);
@@ -214,12 +217,16 @@ impl Usb2CanBuilder {
         let serial = serialport::new(&self.path, u32::from(self.serial_baud_rate))
             .data_bits(DataBits::Eight)
             .stop_bits(StopBits::Two);
-        let serial = serial.open()?;
+        let mut serial = serial.open()?;
         debug!("Serial port opened: {:?}", serial.name());
 
         let mut receiver = Receiver::new(serial.try_clone()?);
         receiver.set_receive_timeout(self.serial_receive_timeout)?;
 
+        // Set timeout for writing to "infinite" value to make every write blocking.
+        serial.set_timeout(INFINITE_TIMEOUT).map_err(|error| {
+            Error::SetConfiguration(format!("Failed to set write timeout to MAX: {}", error))
+        })?;
         let mut transmitter = Transmitter::new(serial);
         transmitter.set_frame_delay_multiplier(self.frame_delay_multiplier)?;
 
@@ -1843,6 +1850,10 @@ fn id_to_bytes(id: Id) -> [u8; 4] {
 mod tests {
     use embedded_can::{ExtendedId, StandardId};
     use proptest::{arbitrary::any, collection::vec, proptest};
+    use rustix::{
+        fd::OwnedFd,
+        pty::{grantpt, openpt, ptsname, unlockpt, OpenptFlags},
+    };
 
     use super::*;
 
@@ -2388,5 +2399,42 @@ mod tests {
             filter_disabled.to_configuration_message().unwrap(),
             filter_empty_blocklist.to_configuration_message().unwrap()
         );
+    }
+
+    #[test]
+    fn rust_serialport_cloned_timeout() {
+        // Check that the timeout in the cloned serial port is independent of the original.
+        let (_mpt, mut port) = open_pty();
+        let mut port_clone = port.try_clone().expect("serialport::try_clone() failed");
+
+        port.set_timeout(Duration::from_secs(1)).unwrap();
+        port_clone.set_timeout(Duration::from_secs(2)).unwrap();
+
+        assert_eq!(port.timeout(), Duration::from_secs(1));
+        assert_eq!(port_clone.timeout(), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn rust_serialport_large_timeout() {
+        let (_mpt, mut port) = open_pty();
+        port.set_timeout(INFINITE_TIMEOUT).unwrap();
+        port.write_all(&[0x00]).unwrap();
+    }
+
+    fn open_pty() -> (OwnedFd, Box<dyn SerialPort>) {
+        let mpt = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).expect("posix_openpt() failed");
+        grantpt(&mpt).expect("grantpt() failed");
+        unlockpt(&mpt).expect("unlockpt() failed");
+
+        let pt_path = ptsname(&mpt, vec![0u8; 1024]).expect("ptsname() failed");
+        let pt_path =
+            String::from_utf8(pt_path.into_bytes()).expect("ptsname() returned invalid UTF-8");
+
+        (
+            mpt,
+            serialport::new(pt_path, 9600)
+                .open()
+                .expect("serialport::open() failed"),
+        )
     }
 }
