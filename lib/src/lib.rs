@@ -1074,8 +1074,12 @@ impl Receiver {
             FixedFrameReceiveState::read_frame(&mut read_byte)
         };
 
-        if result.is_err() && !received_bytes.is_empty() {
-            self.push_back_unused_bytes(&received_bytes[1..]);
+        if !received_bytes.is_empty() {
+            match result {
+                Err(Error::RecvUnexpected(_)) => self.push_back_unused_bytes(&received_bytes[1..]),
+                Err(_) => self.push_back_unused_bytes(&received_bytes),
+                Ok(_) => {}
+            }
         }
 
         result
