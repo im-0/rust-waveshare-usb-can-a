@@ -38,8 +38,9 @@ use tracing::{error, info};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
+use waveshare_usb_can_a::sync::Usb2Can;
 use waveshare_usb_can_a::{
-    CanBaudRate, Frame, SerialBaudRate, StoredIdFilter, Usb2Can, Usb2CanConfiguration,
+    CanBaudRate, Frame, SerialBaudRate, StoredIdFilter, Usb2CanConfiguration,
     DEFAULT_SERIAL_BAUD_RATE, EXTENDED_ID_EXTRA_BITS,
 };
 
@@ -90,7 +91,7 @@ fn run_dump(args: &cli::Cli, options: &cli::DumpOptions) -> Result<()> {
         usb2can_conf
     };
 
-    let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
+    let mut usb2can = waveshare_usb_can_a::sync::new(&args.serial_path, &usb2can_conf)
         .set_serial_baud_rate(options.serial_baud_rate)
         .set_serial_receive_timeout(options.receive_timeout)
         .open()
@@ -161,7 +162,7 @@ fn run_inject(args: &cli::Cli, options: &cli::InjectOptions) -> Result<()> {
         .set_variable_encoding(options.variable_encoding)
         .set_automatic_retransmission(options.automatic_retransmission);
 
-    let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
+    let mut usb2can = waveshare_usb_can_a::sync::new(&args.serial_path, &usb2can_conf)
         .set_serial_baud_rate(options.serial_baud_rate)
         .set_frame_delay_multiplier(options.frame_delay_multiplier)?
         .open()
@@ -197,7 +198,7 @@ fn run_perf(args: &cli::Cli, options: &cli::PerfOptions) -> Result<()> {
         .set_variable_encoding(options.variable_encoding)
         .set_automatic_retransmission(false);
 
-    let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
+    let mut usb2can = waveshare_usb_can_a::sync::new(&args.serial_path, &usb2can_conf)
         .set_serial_baud_rate(options.serial_baud_rate)
         .set_serial_receive_timeout(options.receive_timeout)
         .set_frame_delay_multiplier(options.frame_delay_multiplier)?
@@ -343,7 +344,7 @@ fn run_set_serial_baud_rate(
     );
 
     // Open USB2CAN adapter.
-    let mut usb2can = waveshare_usb_can_a::new(
+    let mut usb2can = waveshare_usb_can_a::sync::new(
         &args.serial_path,
         &Usb2CanConfiguration::new(CanBaudRate::R5kBd),
     )
@@ -373,7 +374,7 @@ fn run_set_stored_id_filter(
     let usb2can_conf = Usb2CanConfiguration::new(CanBaudRate::R5kBd)
         .set_loopback(true)
         .set_silent(true);
-    let mut usb2can = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
+    let mut usb2can = waveshare_usb_can_a::sync::new(&args.serial_path, &usb2can_conf)
         .set_serial_baud_rate(options.serial_baud_rate)
         .open()
         .context("Failed to open USB2CAN device")?;
@@ -381,17 +382,19 @@ fn run_set_stored_id_filter(
     let filter = match &options.filter_mode {
         cli::SetStoredIdFilterSubCommand::Disabled => {
             info!("Disabling filter...");
-            StoredIdFilter::Disabled
+            StoredIdFilter::new_disabled()
         }
 
         cli::SetStoredIdFilterSubCommand::Blocklist(ids) => {
             info!("Configuring blocklist...");
-            StoredIdFilter::BlockList(ids.id.clone())
+            StoredIdFilter::new_block(ids.id.clone())
+                .context("Failed to create new blocklist filter")?
         }
 
         cli::SetStoredIdFilterSubCommand::Allowlist(ids) => {
             info!("Configuring allowlist...");
-            StoredIdFilter::AllowList(ids.id.clone())
+            StoredIdFilter::new_allow(ids.id.clone())
+                .context("Failed to create new allowlist filter")?
         }
     };
     usb2can
@@ -423,7 +426,7 @@ fn run_reset_to_factory_defaults(args: &cli::Cli) -> Result<()> {
             .set_loopback(true)
             .set_silent(true);
 
-        let mut usb2can_a = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
+        let mut usb2can_a = waveshare_usb_can_a::sync::new(&args.serial_path, &usb2can_conf)
             .set_serial_receive_timeout(ADAPTER_PROBE_TIMEOUT)
             .set_serial_baud_rate(serial_baud_rate)
             .open()
@@ -435,7 +438,7 @@ fn run_reset_to_factory_defaults(args: &cli::Cli) -> Result<()> {
 
         info!("Trying to disable stored ID filter...");
         usb2can_a
-            .set_stored_id_filter(&StoredIdFilter::Disabled)
+            .set_stored_id_filter(&StoredIdFilter::new_disabled())
             .context("Failed to disable stored ID filter")?;
 
         if check_echo(&mut usb2can_b, &mut usb2can_a, &frame, 1).is_ok() {
@@ -495,14 +498,14 @@ fn self_test_stored_id_filter(args: &cli::Cli, options: &cli::SelfTestOptions) -
         .set_silent(options.second_serial_path.is_none() && !options.send_frames)
         .set_automatic_retransmission(false);
 
-    let mut usb2can_a = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
+    let mut usb2can_a = waveshare_usb_can_a::sync::new(&args.serial_path, &usb2can_conf)
         .set_serial_baud_rate(options.first_serial_baud_rate)
         .set_serial_receive_timeout(options.receive_timeout)
         .open()
         .context("Failed to open USB2CAN device")?;
 
     let mut usb2can_b = if let Some(ref second_serial_path) = options.second_serial_path {
-        waveshare_usb_can_a::new(second_serial_path, &usb2can_conf)
+        waveshare_usb_can_a::sync::new(second_serial_path, &usb2can_conf)
             .set_serial_baud_rate(options.second_serial_baud_rate)
             .set_serial_receive_timeout(options.receive_timeout)
             .open()
@@ -512,7 +515,8 @@ fn self_test_stored_id_filter(args: &cli::Cli, options: &cli::SelfTestOptions) -
     };
 
     // Blocklist filter.
-    let filter = StoredIdFilter::BlockList(vec![ExtendedId::ZERO.into()]);
+    let filter = StoredIdFilter::new_block(vec![ExtendedId::ZERO.into()])
+        .context("Failed to create blocklist filter")?;
     usb2can_a
         .set_stored_id_filter(&filter)
         .context("Failed to set blocklist filter")?;
@@ -528,12 +532,13 @@ fn self_test_stored_id_filter(args: &cli::Cli, options: &cli::SelfTestOptions) -
     }
 
     // Allowlist filter.
-    let filter = StoredIdFilter::AllowList(vec![
+    let filter = StoredIdFilter::new_allow(vec![
         ExtendedId::MAX.into(),
         Id::Extended(
             ExtendedId::new(ExtendedId::MAX.as_raw() ^ 0x0f).expect("Logic error: bad inverted ID"),
         ),
-    ]);
+    ])
+    .context("Failed to create allowlist filter")?;
     usb2can_a
         .set_stored_id_filter(&filter)
         .context("Failed to set blocklist filter")?;
@@ -550,7 +555,7 @@ fn self_test_stored_id_filter(args: &cli::Cli, options: &cli::SelfTestOptions) -
 
     // Disable filter.
     info!("Disabling stored ID filter...");
-    let filter = StoredIdFilter::Disabled;
+    let filter = StoredIdFilter::new_disabled();
     usb2can_a
         .set_stored_id_filter(&filter)
         .context("Failed to set blocklist filter")?;
@@ -580,13 +585,13 @@ fn self_test_can_rates_frame_types_and_filtering(
         .set_silent(options.second_serial_path.is_none() && !options.send_frames)
         .set_automatic_retransmission(false);
 
-    let mut usb2can_a = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
+    let mut usb2can_a = waveshare_usb_can_a::sync::new(&args.serial_path, &usb2can_conf)
         .set_serial_baud_rate(options.first_serial_baud_rate)
         .set_serial_receive_timeout(options.receive_timeout)
         .open()
         .context("Failed to open USB2CAN device")?;
     let mut usb2can_b = if let Some(ref second_serial_path) = options.second_serial_path {
-        waveshare_usb_can_a::new(second_serial_path, &usb2can_conf)
+        waveshare_usb_can_a::sync::new(second_serial_path, &usb2can_conf)
             .set_serial_baud_rate(options.second_serial_baud_rate)
             .set_serial_receive_timeout(options.receive_timeout)
             .open()
@@ -717,14 +722,14 @@ fn self_test_serial_rates(args: &cli::Cli, options: &cli::SelfTestOptions) -> Re
         .set_silent(options.second_serial_path.is_none() && !options.send_frames)
         .set_automatic_retransmission(false);
 
-    let mut usb2can_a = waveshare_usb_can_a::new(&args.serial_path, &usb2can_conf)
+    let mut usb2can_a = waveshare_usb_can_a::sync::new(&args.serial_path, &usb2can_conf)
         .set_serial_baud_rate(options.first_serial_baud_rate)
         .set_serial_receive_timeout(options.receive_timeout)
         .open()
         .context("Failed to open USB2CAN device")?;
 
     let mut usb2can_b = if let Some(ref second_serial_path) = options.second_serial_path {
-        waveshare_usb_can_a::new(second_serial_path, &usb2can_conf)
+        waveshare_usb_can_a::sync::new(second_serial_path, &usb2can_conf)
             .set_serial_baud_rate(options.second_serial_baud_rate)
             .set_serial_receive_timeout(options.receive_timeout)
             .open()
