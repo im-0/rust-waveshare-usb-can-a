@@ -17,52 +17,52 @@ readme = "README.md"
 
 [workspace.dependencies.anyhow]
 version = "1.0.86"
-default_features = false
+default-features = false
 features = ["std"]
 
 [workspace.dependencies.clap]
 version = "4.5.6"
-default_features = false
+default-features = false
 features = ["cargo", "color", "derive", "error-context", "help", "std", "usage", "wrap_help"]
 
 [workspace.dependencies.embedded-can]
 version = "0.4.1"
-default_features = false
+default-features = false
 features = []
 
 [workspace.dependencies.proptest]
 version = "1.4.0"
-default_features = false
+default-features = false
 features = ["bit-set", "std"]
 
 [workspace.dependencies.proptest-derive]
 version = "0.4.0"
-default_features = false
+default-features = false
 features = []
 
 [workspace.dependencies.rustix]
 version = "0.38.34"
-default_features = false
+default-features = false
 features = ["pty"]
 
 [workspace.dependencies.serialport]
 version = "4.3.0"
-default_features = false
+default-features = false
 features = []
 
 [workspace.dependencies.thiserror]
 version = "1.0.61"
-default_features = false
+default-features = false
 features = []
 
 [workspace.dependencies.tracing]
 version = "0.1.40"
-default_features = false
+default-features = false
 features = ["std"]
 
 [workspace.dependencies.tracing-subscriber]
 version = "0.3.18"
-default_features = false
+default-features = false
 features = [
     "ansi",
     "chrono",
@@ -74,6 +74,6 @@ features = [
 
 [workspace.dependencies.waveshare-usb-can-a]
 version = "0.1.0"
-default_features = false
+default-features = false
 features = []
 path = "lib"
