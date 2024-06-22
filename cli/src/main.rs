@@ -28,7 +28,7 @@ use std::collections::HashSet;
 use std::io::stderr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use clap::Parser;
 use cli::PerfSubCommand;
 use embedded_can::{blocking::Can, StandardId};
@@ -38,7 +38,7 @@ use tracing::{error, info};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
-use waveshare_usb_can_a::sync::Usb2Can;
+use waveshare_usb_can_a::sync::{self, Usb2Can};
 use waveshare_usb_can_a::{
     CanBaudRate, Frame, SerialBaudRate, StoredIdFilter, Usb2CanConfiguration,
     DEFAULT_SERIAL_BAUD_RATE, EXTENDED_ID_EXTRA_BITS,
@@ -70,7 +70,6 @@ fn main() -> Result<()> {
         cli::SubCommand::SetSerialBaudRate(options) => run_set_serial_baud_rate(&args, options),
         cli::SubCommand::SetStoredIdFilter(options) => run_set_stored_id_filter(&args, options),
         cli::SubCommand::ResetToFactoryDefaults => run_reset_to_factory_defaults(&args),
-        cli::SubCommand::SelfTest(options) => run_self_test(&args, options),
     }
 }
 
@@ -434,14 +433,12 @@ fn run_reset_to_factory_defaults(args: &cli::Cli) -> Result<()> {
 
         let mut usb2can_b = usb2can_a.clone();
 
-        let frame = Frame::new_remote(StandardId::MAX, 0).expect("Logic error: bad test frame");
-
         info!("Trying to disable stored ID filter...");
         usb2can_a
             .set_stored_id_filter(&StoredIdFilter::new_disabled())
             .context("Failed to disable stored ID filter")?;
 
-        if check_echo(&mut usb2can_b, &mut usb2can_a, &frame, 1).is_ok() {
+        if check_echo(&mut usb2can_b, &mut usb2can_a).context("Echo test failed")? {
             info!(
                 "Adapter responded with serial baud rate {}",
                 serial_baud_rate
@@ -469,411 +466,27 @@ fn run_reset_to_factory_defaults(args: &cli::Cli) -> Result<()> {
     Ok(())
 }
 
-fn run_self_test(args: &cli::Cli, options: &cli::SelfTestOptions) -> Result<()> {
-    // Run tests with different settings.
-    info!(
-        "Starting {}self-test for the Waveshare USB-CAN-A adapter...",
-        if options.second_serial_path.is_none() {
-            "loopback "
-        } else {
-            ""
-        }
-    );
+fn check_echo(usb2can_t: &mut Usb2Can, usb2can_r: &mut Usb2Can) -> Result<bool> {
+    #![allow(clippy::print_stdout)]
 
-    self_test_stored_id_filter(args, options)?;
-    self_test_can_rates_frame_types_and_filtering(args, options)?;
-    self_test_serial_rates(args, options)?;
+    let frame = Frame::new_remote(StandardId::MAX, 0).expect("Logic error: bad test frame");
 
-    info!("All tests passed successfully.");
+    transmit(usb2can_t, &frame)?;
 
-    Ok(())
-}
+    match usb2can_r.receive() {
+        Err(sync::Error::SerialReadTimedOut) => Ok(false),
+        Err(error) => Err(error).context("Failed to receive CAN echo frame"),
 
-fn self_test_stored_id_filter(args: &cli::Cli, options: &cli::SelfTestOptions) -> Result<()> {
-    info!("Testing stored ID filter...");
+        Ok(received) => {
+            println!("{:.03} -> {}", timestamp()?, received);
 
-    // Open USB2CAN adapter.
-    let usb2can_conf = Usb2CanConfiguration::new(CanBaudRate::R5kBd)
-        .set_loopback(options.second_serial_path.is_none())
-        .set_silent(options.second_serial_path.is_none() && !options.send_frames)
-        .set_automatic_retransmission(false);
-
-    let mut usb2can_a = waveshare_usb_can_a::sync::new(&args.serial_path, &usb2can_conf)
-        .set_serial_baud_rate(options.first_serial_baud_rate)
-        .set_serial_receive_timeout(options.receive_timeout)
-        .open()
-        .context("Failed to open USB2CAN device")?;
-
-    let mut usb2can_b = if let Some(ref second_serial_path) = options.second_serial_path {
-        waveshare_usb_can_a::sync::new(second_serial_path, &usb2can_conf)
-            .set_serial_baud_rate(options.second_serial_baud_rate)
-            .set_serial_receive_timeout(options.receive_timeout)
-            .open()
-            .context("Failed to open second USB2CAN device")?
-    } else {
-        usb2can_a.clone()
-    };
-
-    // Blocklist filter.
-    let filter = StoredIdFilter::new_block(vec![ExtendedId::ZERO.into()])
-        .context("Failed to create blocklist filter")?;
-    usb2can_a
-        .set_stored_id_filter(&filter)
-        .context("Failed to set blocklist filter")?;
-    if options.second_serial_path.is_some() {
-        usb2can_b
-            .set_stored_id_filter(&filter)
-            .context("Failed to set blocklist filter on second USB2CAN device")?;
-    }
-
-    self_test_one_way(&mut usb2can_b, &mut usb2can_a, true, true)?;
-    if options.second_serial_path.is_some() {
-        self_test_one_way(&mut usb2can_a, &mut usb2can_b, true, true)?;
-    }
-
-    // Allowlist filter.
-    let filter = StoredIdFilter::new_allow(vec![
-        ExtendedId::MAX.into(),
-        Id::Extended(
-            ExtendedId::new(ExtendedId::MAX.as_raw() ^ 0x0f).expect("Logic error: bad inverted ID"),
-        ),
-    ])
-    .context("Failed to create allowlist filter")?;
-    usb2can_a
-        .set_stored_id_filter(&filter)
-        .context("Failed to set blocklist filter")?;
-    if options.second_serial_path.is_some() {
-        usb2can_b
-            .set_stored_id_filter(&filter)
-            .context("Failed to set blocklist filter on second USB2CAN device")?;
-    }
-
-    self_test_one_way(&mut usb2can_b, &mut usb2can_a, true, true)?;
-    if options.second_serial_path.is_some() {
-        self_test_one_way(&mut usb2can_a, &mut usb2can_b, true, true)?;
-    }
-
-    // Disable filter.
-    info!("Disabling stored ID filter...");
-    let filter = StoredIdFilter::new_disabled();
-    usb2can_a
-        .set_stored_id_filter(&filter)
-        .context("Failed to set blocklist filter")?;
-    if options.second_serial_path.is_some() {
-        usb2can_b
-            .set_stored_id_filter(&filter)
-            .context("Failed to set blocklist filter on second USB2CAN device")?;
-    }
-
-    self_test_one_way(&mut usb2can_b, &mut usb2can_a, false, true)?;
-    if options.second_serial_path.is_some() {
-        self_test_one_way(&mut usb2can_a, &mut usb2can_b, false, true)?;
-    }
-
-    Ok(())
-}
-
-fn self_test_can_rates_frame_types_and_filtering(
-    args: &cli::Cli,
-    options: &cli::SelfTestOptions,
-) -> Result<()> {
-    info!("Testing all supported CAN baud rates, frame types, and filtering...");
-
-    // Open USB2CAN adapter.
-    let usb2can_conf = Usb2CanConfiguration::new(CanBaudRate::R5kBd)
-        .set_loopback(options.second_serial_path.is_none())
-        .set_silent(options.second_serial_path.is_none() && !options.send_frames)
-        .set_automatic_retransmission(false);
-
-    let mut usb2can_a = waveshare_usb_can_a::sync::new(&args.serial_path, &usb2can_conf)
-        .set_serial_baud_rate(options.first_serial_baud_rate)
-        .set_serial_receive_timeout(options.receive_timeout)
-        .open()
-        .context("Failed to open USB2CAN device")?;
-    let mut usb2can_b = if let Some(ref second_serial_path) = options.second_serial_path {
-        waveshare_usb_can_a::sync::new(second_serial_path, &usb2can_conf)
-            .set_serial_baud_rate(options.second_serial_baud_rate)
-            .set_serial_receive_timeout(options.receive_timeout)
-            .open()
-            .context("Failed to open second USB2CAN device")?
-    } else {
-        usb2can_a.clone()
-    };
-
-    for variable_encoding in [false, true] {
-        for can_baud_rate in [
-            CanBaudRate::R5kBd,
-            CanBaudRate::R10kBd,
-            CanBaudRate::R20kBd,
-            CanBaudRate::R50kBd,
-            CanBaudRate::R100kBd,
-            CanBaudRate::R125kBd,
-            CanBaudRate::R200kBd,
-            CanBaudRate::R250kBd,
-            CanBaudRate::R400kBd,
-            CanBaudRate::R500kBd,
-            CanBaudRate::R800kBd,
-            CanBaudRate::R1000kBd,
-        ] {
-            for extended_frame in [false, true] {
-                for filtering in [false, true] {
-                    let (filter, mask) = if filtering {
-                        let id: Id = if extended_frame {
-                            ExtendedId::new(0x0f0)
-                                .expect("Logic error: bad test ID")
-                                .into()
-                        } else {
-                            StandardId::new(0x0f0)
-                                .expect("Logic error: bad test ID")
-                                .into()
-                        };
-                        (id, id)
-                    } else {
-                        let id: Id = if extended_frame {
-                            ExtendedId::ZERO.into()
-                        } else {
-                            StandardId::ZERO.into()
-                        };
-                        (id, id)
-                    };
-
-                    let usb2can_conf = usb2can_a
-                        .configuration()?
-                        .set_variable_encoding(variable_encoding)
-                        .set_can_baud_rate(can_baud_rate)
-                        .set_filter(filter, mask)?;
-                    usb2can_a.set_configuration(&usb2can_conf)?;
-
-                    info!(
-                        "Running tests with {} encoding, CAN baud rate {}, {} frames, {}...",
-                        if variable_encoding {
-                            "variable"
-                        } else {
-                            "fixed"
-                        },
-                        can_baud_rate,
-                        if extended_frame {
-                            "extended"
-                        } else {
-                            "standard"
-                        },
-                        if filtering {
-                            "with filtering"
-                        } else {
-                            "without filtering"
-                        }
-                    );
-                    if options.second_serial_path.is_some() {
-                        usb2can_b.set_configuration(&usb2can_conf)?;
-                        self_test_one_way(
-                            &mut usb2can_b,
-                            &mut usb2can_a,
-                            filtering,
-                            extended_frame,
-                        )?;
-
-                        info!(
-                            "Running tests with {} encoding, baud rate {}, {} frames, {}, reverse...",
-                            if variable_encoding {
-                                "variable"
-                            } else {
-                                "fixed"
-                            },
-                            can_baud_rate,
-                            if extended_frame {
-                                "extended"
-                            } else {
-                                "standard"
-                            },
-                            if filtering {
-                                "with filtering"
-                            } else {
-                                "without filtering"
-                            }
-                        );
-                        self_test_one_way(
-                            &mut usb2can_a,
-                            &mut usb2can_b,
-                            filtering,
-                            extended_frame,
-                        )?;
-                    } else {
-                        self_test_one_way(
-                            &mut usb2can_b,
-                            &mut usb2can_a,
-                            filtering,
-                            extended_frame,
-                        )?;
-                    };
-                }
+            if received == frame {
+                Ok(true)
+            } else {
+                bail!("Received unexpected frame: {}", received)
             }
         }
     }
-
-    Ok(())
-}
-
-fn self_test_serial_rates(args: &cli::Cli, options: &cli::SelfTestOptions) -> Result<()> {
-    info!("Testing all supported serial baud rates...");
-
-    // Open USB2CAN adapter.
-    let usb2can_conf = Usb2CanConfiguration::new(CanBaudRate::R5kBd)
-        .set_loopback(options.second_serial_path.is_none())
-        .set_silent(options.second_serial_path.is_none() && !options.send_frames)
-        .set_automatic_retransmission(false);
-
-    let mut usb2can_a = waveshare_usb_can_a::sync::new(&args.serial_path, &usb2can_conf)
-        .set_serial_baud_rate(options.first_serial_baud_rate)
-        .set_serial_receive_timeout(options.receive_timeout)
-        .open()
-        .context("Failed to open USB2CAN device")?;
-
-    let mut usb2can_b = if let Some(ref second_serial_path) = options.second_serial_path {
-        waveshare_usb_can_a::sync::new(second_serial_path, &usb2can_conf)
-            .set_serial_baud_rate(options.second_serial_baud_rate)
-            .set_serial_receive_timeout(options.receive_timeout)
-            .open()
-            .context("Failed to open second USB2CAN device")?
-    } else {
-        usb2can_a.clone()
-    };
-
-    for serial_baud_rate in [
-        SerialBaudRate::R9600Bd,
-        SerialBaudRate::R19200Bd,
-        SerialBaudRate::R38400Bd,
-        SerialBaudRate::R115200Bd,
-        SerialBaudRate::R1228800Bd,
-        SerialBaudRate::R2000000Bd,
-    ] {
-        info!(
-            "Running tests with serial baud rate {}...",
-            serial_baud_rate
-        );
-
-        usb2can_a
-            .set_serial_baud_rate(serial_baud_rate)
-            .context("Failed to set serial baud rate of USB2CAN device to test value")?;
-        if options.second_serial_path.is_some() {
-            usb2can_b
-                .set_serial_baud_rate(serial_baud_rate)
-                .context("Failed to set serial baud rate of second USB2CAN device to test value")?;
-        }
-
-        self_test_one_way(&mut usb2can_b, &mut usb2can_a, false, true)?;
-        if options.second_serial_path.is_some() {
-            info!(
-                "Running tests with serial baud rate {}, reverse...",
-                serial_baud_rate
-            );
-            self_test_one_way(&mut usb2can_a, &mut usb2can_b, false, true)?;
-        }
-    }
-
-    info!("Resetting to the original serial baud rate value...");
-    usb2can_a
-        .set_serial_baud_rate(options.first_serial_baud_rate)
-        .context("Failed to set serial baud rate of USB2CAN device to orinal value")?;
-    if options.second_serial_path.is_some() {
-        usb2can_b
-            .set_serial_baud_rate(options.second_serial_baud_rate)
-            .context("Failed to set serial baud rate of second USB2CAN device to orinal value")?;
-    }
-
-    Ok(())
-}
-
-fn self_test_one_way(
-    usb2can_t: &mut Usb2Can,
-    usb2can_r: &mut Usb2Can,
-    filtering: bool,
-    extended_frame: bool,
-) -> Result<()> {
-    if filtering {
-        // Send additional frame that will be ignored by the receiver because of enabled filter.
-        let wrong_id: Id = if extended_frame {
-            ExtendedId::ZERO.into()
-        } else {
-            StandardId::ZERO.into()
-        };
-
-        let wrong_frame =
-            Frame::new(wrong_id, &[7, 6, 5, 4, 3, 2, 1, 0]).expect("Logic error: bad test frame");
-        transmit(usb2can_t, &wrong_frame)?;
-    }
-
-    let id: Id = if extended_frame {
-        ExtendedId::MAX.into()
-    } else {
-        StandardId::MAX.into()
-    };
-
-    // Data frame with maximum supported data length.
-    let frame = Frame::new(id, &[0, 1, 2, 3, 4, 5, 6, 7]).expect("Logic error: bad test frame");
-    check_echo(usb2can_t, usb2can_r, &frame, 1)?;
-
-    // Data frame with minimum data length.
-    let frame = Frame::new(id, &[]).expect("Logic error: bad test frame");
-    check_echo(usb2can_t, usb2can_r, &frame, 1)?;
-
-    // Remote frame with maximum supported data length.
-    let frame = Frame::new_remote(id, 0).expect("Logic error: bad test frame");
-    check_echo(usb2can_t, usb2can_r, &frame, 1)?;
-
-    // Remote frame with minimum data length.
-    let frame = Frame::new_remote(id, 8).expect("Logic error: bad test frame");
-    check_echo(usb2can_t, usb2can_r, &frame, 1)?;
-
-    // Send and receive multiple frames to test buffering.
-    let frame = Frame::new(id, &[0, 1, 2, 3, 4, 5, 6, 7]).expect("Logic error: bad test frame");
-    check_echo(usb2can_t, usb2can_r, &frame, 2)
-}
-
-fn check_echo(
-    usb2can_t: &mut Usb2Can,
-    usb2can_r: &mut Usb2Can,
-    frame: &Frame,
-    num: usize,
-) -> Result<()> {
-    let inverted_frame = invert_frame(frame);
-
-    for i in 0..num {
-        let test_frame = if i % 2 == 0 { frame } else { &inverted_frame };
-
-        transmit(usb2can_t, test_frame)?;
-    }
-
-    for i in 0..num {
-        let received = receive(usb2can_r)?;
-
-        if i % 2 == 0 {
-            assert_eq!(frame, &received);
-        } else {
-            assert_eq!(inverted_frame, received);
-        }
-    }
-
-    Ok(())
-}
-
-fn invert_frame(frame: &Frame) -> Frame {
-    let data = frame.data().iter().map(|byte| !byte).collect::<Vec<_>>();
-
-    let id = match frame.id() {
-        Id::Standard(id) => {
-            Id::Standard(StandardId::new(id.as_raw() ^ 0x0f).expect("Logic error: bad inverted ID"))
-        }
-        Id::Extended(id) => {
-            Id::Extended(ExtendedId::new(id.as_raw() ^ 0x0f).expect("Logic error: bad inverted ID"))
-        }
-    };
-
-    if frame.is_data_frame() {
-        Frame::new(id, &data)
-    } else {
-        Frame::new_remote(id, frame.dlc())
-    }
-    .expect("Logic error: bad inverted frame")
 }
 
 fn transmit(usb2can: &mut Usb2Can, frame: &Frame) -> Result<()> {

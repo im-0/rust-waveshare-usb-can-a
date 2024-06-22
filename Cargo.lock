@@ -793,6 +793,7 @@ checksum = "af190c94f2773fdb3729c55b007a722abb5384da03bc0986df4c289bf5567e96"
 name = "waveshare-usb-can-a"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "embedded-can",
  "proptest",
  "proptest-derive",
@@ -800,6 +801,7 @@ dependencies = [
  "serialport",
  "thiserror",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

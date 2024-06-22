@@ -1,0 +1,13 @@
+#!/bin/sh
+
+if [ $# -eq 1 ]; then
+	export HW_TEST_SERIAL_PATH="${1}"
+elif [ $# -eq 2 ]; then
+	export HW_TEST_SERIAL_PATH="${1}"
+	export HW_TEST_SECOND_SERIAL_PATH="${2}"
+else
+	echo "Usage: ${0} <SERIAL_PATH> [SECOND_SERIAL_PATH]"
+	exit 1
+fi
+
+exec cargo test -- --ignored --test-threads 1 --show-output
