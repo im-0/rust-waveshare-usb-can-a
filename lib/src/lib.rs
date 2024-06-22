@@ -36,6 +36,7 @@ use embedded_can::{ExtendedId, Frame as FrameTrait, Id};
 use thiserror::Error;
 
 mod proto;
+#[cfg(feature = "sync")]
 pub mod sync;
 
 const CONFIGURATION_DELAY: Duration = Duration::from_millis(100);

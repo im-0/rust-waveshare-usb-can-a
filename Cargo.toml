@@ -75,5 +75,5 @@ features = [
 [workspace.dependencies.waveshare-usb-can-a]
 version = "0.1.0"
 default-features = false
-features = []
+features = ["sync"]
 path = "lib"
