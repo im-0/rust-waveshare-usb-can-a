@@ -72,6 +72,20 @@ features = [
     "tracing-log",
 ]
 
+[workspace.dependencies.tokio]
+version = "1.38.0"
+default-features = false
+features = [
+    "io-util",
+    "sync",
+    "time",
+]
+
+[workspace.dependencies.tokio-serial]
+version = "5.4.4"
+default-features = false
+features = []
+
 [workspace.dependencies.waveshare-usb-can-a]
 version = "0.1.0"
 default-features = false

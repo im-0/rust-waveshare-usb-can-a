@@ -38,6 +38,8 @@ use thiserror::Error;
 mod proto;
 #[cfg(feature = "sync")]
 pub mod sync;
+#[cfg(feature = "tokio")]
+pub mod tokio;
 
 const CONFIGURATION_DELAY: Duration = Duration::from_millis(100);
 const BLINK_DELAY: Duration = Duration::from_millis(700);

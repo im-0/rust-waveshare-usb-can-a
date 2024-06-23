@@ -1,15 +1,19 @@
 use std::{
     borrow::Cow,
-    io::{self, Read},
     result,
-    sync::{Arc, Mutex, MutexGuard},
-    thread::sleep,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
-use embedded_can::blocking;
-use serialport::{ClearBuffer, DataBits, SerialPort, StopBits};
 use thiserror::Error;
+use tokio::{
+    io::{self, AsyncReadExt, AsyncWriteExt},
+    sync::{Mutex, MutexGuard},
+    time::sleep,
+};
+use tokio_serial::{
+    ClearBuffer, DataBits, SerialPort, SerialPortBuilderExt, SerialStream, StopBits,
+};
 use tracing::{debug, trace};
 
 use crate::{
@@ -20,12 +24,6 @@ use crate::{
     Frame, SerialBaudRate, StoredIdFilter, Usb2CanConfiguration, CONFIGURATION_DELAY,
     DEFAULT_FRAME_DELAY_MULTIPLIER, DEFAULT_SERIAL_BAUD_RATE,
 };
-
-pub const DEFAULT_SERIAL_RECEIVE_TIMEOUT: Duration = Duration::from_millis(1000);
-
-// Not really infinite...
-// TODO: Fix rust-serialport to allow blocking mode.
-const INFINITE_TIMEOUT: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 100);
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -39,23 +37,13 @@ pub enum Error {
     Locking(String),
 
     #[error("Serial port error: {}", .0.description)]
-    Serial(#[from] serialport::Error),
-
-    #[error("Serial read timed out")]
-    SerialReadTimedOut,
+    Serial(#[from] tokio_serial::Error),
 
     #[error("Serial IO error: {0}")]
     SerialIO(#[from] io::Error),
 
     #[error("Received unexpected data: {0}")]
     RecvUnexpected(String),
-}
-
-impl embedded_can::Error for Error {
-    fn kind(&self) -> embedded_can::ErrorKind {
-        // We don't have a way to distinguish between different kinds of errors.
-        embedded_can::ErrorKind::Other
-    }
 }
 
 impl NewRecvUnexpectedError for Error {
@@ -70,7 +58,6 @@ pub type Result<T> = result::Result<T, Error>;
 pub struct Usb2CanBuilder {
     path: String,
     serial_baud_rate: SerialBaudRate,
-    serial_receive_timeout: Duration,
     frame_delay_multiplier: f64,
     adapter_configuration: Usb2CanConfiguration,
 }
@@ -93,16 +80,6 @@ impl Usb2CanBuilder {
     #[must_use]
     pub const fn set_serial_baud_rate(mut self, serial_baud_rate: SerialBaudRate) -> Self {
         self.serial_baud_rate = serial_baud_rate;
-        self
-    }
-
-    pub const fn serial_receive_timeout(&self) -> Duration {
-        self.serial_receive_timeout
-    }
-
-    #[must_use]
-    pub const fn set_serial_receive_timeout(mut self, serial_receive_timeout: Duration) -> Self {
-        self.serial_receive_timeout = serial_receive_timeout;
         self
     }
 
@@ -134,33 +111,29 @@ impl Usb2CanBuilder {
         self
     }
 
-    pub fn open_without_blink_delay(&self) -> Result<Usb2Can> {
-        self.open_inner(false)
+    pub async fn open_without_blink_delay(&self) -> Result<Usb2Can> {
+        self.open_inner(false).await
     }
 
-    pub fn open(&self) -> Result<Usb2Can> {
-        self.open_inner(true)
+    pub async fn open(&self) -> Result<Usb2Can> {
+        self.open_inner(true).await
     }
 
-    fn open_inner(&self, with_blink_delay: bool) -> Result<Usb2Can> {
+    async fn open_inner(&self, with_blink_delay: bool) -> Result<Usb2Can> {
         debug!("Opening USB2CAN with configuration {:?}", self);
 
-        let serial = serialport::new(&self.path, u32::from(self.serial_baud_rate))
+        let serial = tokio_serial::new(&self.path, u32::from(self.serial_baud_rate))
             .data_bits(DataBits::Eight)
             .stop_bits(StopBits::Two);
-        let mut serial = serial.open()?;
+        let serial = serial.open_native_async()?;
         debug!("Serial port opened: {:?}", serial.name());
+        let serial = Arc::new(Mutex::new(serial));
 
         let mut receiver = Receiver::new(
-            serial.try_clone()?,
+            serial.clone(),
             self.adapter_configuration.variable_encoding(),
         );
-        receiver.set_receive_timeout(self.serial_receive_timeout)?;
 
-        // Set timeout for writing to "infinite" value to make every write blocking.
-        serial.set_timeout(INFINITE_TIMEOUT).map_err(|error| {
-            Error::SetConfiguration(format!("Failed to set write timeout to MAX: {}", error))
-        })?;
         let mut transmitter = Transmitter::new(serial);
         transmitter.set_frame_delay_multiplier(self.frame_delay_multiplier)?;
 
@@ -177,7 +150,7 @@ impl Usb2CanBuilder {
             configuration: Arc::new(Mutex::new(self.adapter_configuration.clone())),
         };
 
-        usb2can.set_configuration_inner(None)?;
+        usb2can.set_configuration_inner(None).await?;
 
         Ok(usb2can)
     }
@@ -190,7 +163,6 @@ pub fn new<'a>(
     Usb2CanBuilder {
         path: path.into().into_owned(),
         serial_baud_rate: DEFAULT_SERIAL_BAUD_RATE,
-        serial_receive_timeout: DEFAULT_SERIAL_RECEIVE_TIMEOUT,
         frame_delay_multiplier: DEFAULT_FRAME_DELAY_MULTIPLIER,
         adapter_configuration: adapter_configuration.clone(),
     }
@@ -204,42 +176,28 @@ pub struct Usb2Can {
 }
 
 impl Usb2Can {
-    pub fn name(&self) -> Result<String> {
-        self.lock_transmitter()
-            .and_then(|transmitter| transmitter.name())
+    pub async fn name(&self) -> Result<String> {
+        self.lock_transmitter().await.name().await
     }
 
-    pub fn serial_receive_timeout(&self) -> Result<Duration> {
-        self.lock_receiver()
-            .map(|receiver| receiver.receive_timeout())
+    pub async fn configuration(&self) -> Result<Usb2CanConfiguration> {
+        Ok(self.lock_configuration().await.clone())
     }
 
-    pub fn set_serial_receive_timeout(&mut self, timeout: Duration) -> Result<()> {
-        debug!(
-            "Changing serial receive timeout to {:.03}s",
-            timeout.as_secs_f64()
-        );
-        self.lock_receiver()
-            .and_then(|mut receiver| receiver.set_receive_timeout(timeout))
-    }
-
-    pub fn configuration(&self) -> Result<Usb2CanConfiguration> {
-        Ok(self.lock_configuration()?.clone())
-    }
-
-    pub fn set_configuration(&mut self, configuration: &Usb2CanConfiguration) -> Result<()> {
+    pub async fn set_configuration(&mut self, configuration: &Usb2CanConfiguration) -> Result<()> {
         self.set_configuration_inner(Some(configuration.clone()))
+            .await
     }
 
-    fn set_configuration_inner(
+    async fn set_configuration_inner(
         &mut self,
         configuration: Option<Usb2CanConfiguration>,
     ) -> Result<()> {
         debug!("Changing adapter configuration to {:?}...", configuration);
 
-        let mut receiver_guard = self.lock_receiver()?;
-        let mut transmitter_guard = self.lock_transmitter()?;
-        let mut configuration_guard = self.lock_configuration()?;
+        let mut receiver_guard = self.lock_receiver().await;
+        let mut transmitter_guard = self.lock_transmitter().await;
+        let mut configuration_guard = self.lock_configuration().await;
 
         let config_message = if let Some(configuration) = configuration {
             let config_message = configuration.to_fixed_message();
@@ -250,8 +208,8 @@ impl Usb2Can {
         };
 
         receiver_guard.set_encoding(configuration_guard.variable_encoding());
-        receiver_guard.clear()?;
-        transmitter_guard.transmit_all(&config_message)?;
+        receiver_guard.clear().await?;
+        transmitter_guard.transmit_all(&config_message).await?;
 
         // Adapter needs some time to process the configuration change.
         receiver_guard.add_delay(CONFIGURATION_DELAY);
@@ -261,18 +219,18 @@ impl Usb2Can {
         Ok(())
     }
 
-    pub fn serial_baud_rate(&self) -> Result<SerialBaudRate> {
-        self.lock_transmitter()?.serial_baud_rate()
+    pub async fn serial_baud_rate(&self) -> Result<SerialBaudRate> {
+        self.lock_transmitter().await.serial_baud_rate().await
     }
 
-    pub fn set_serial_baud_rate(&mut self, serial_baud_rate: SerialBaudRate) -> Result<()> {
+    pub async fn set_serial_baud_rate(&mut self, serial_baud_rate: SerialBaudRate) -> Result<()> {
         debug!("Changing serial baud rate to {}...", serial_baud_rate);
 
-        let mut receiver_guard = self.lock_receiver()?;
-        let mut transmitter_guard = self.lock_transmitter()?;
+        let mut receiver_guard = self.lock_receiver().await;
+        let mut transmitter_guard = self.lock_transmitter().await;
 
         let config_message = serial_baud_rate.to_fixed_message();
-        transmitter_guard.transmit_all(&config_message)?;
+        transmitter_guard.transmit_all(&config_message).await?;
 
         // Adapater does not respond while blinking.
         let delay = serial_baud_rate.to_blink_delay();
@@ -281,89 +239,71 @@ impl Usb2Can {
         transmitter_guard.add_delay(delay);
 
         // Set the new baud rate on underlying serial interface.
-        transmitter_guard.set_serial_baud_rate(serial_baud_rate)?;
-        receiver_guard.clear()?;
+        transmitter_guard
+            .set_serial_baud_rate(serial_baud_rate)
+            .await?;
+        receiver_guard.clear().await?;
 
         debug!("Done changing serial baud rate!");
         Ok(())
     }
 
-    pub fn frame_delay_multiplier(&self) -> Result<f64> {
-        self.lock_transmitter()
-            .map(|transmitter| transmitter.frame_delay_multiplier())
+    pub async fn frame_delay_multiplier(&self) -> f64 {
+        self.lock_transmitter().await.frame_delay_multiplier()
     }
 
-    pub fn set_frame_delay_multiplier(&mut self, frame_delay_multiplier: f64) -> Result<()> {
+    pub async fn set_frame_delay_multiplier(&mut self, frame_delay_multiplier: f64) -> Result<()> {
         debug!(
             "Changing frame delay multiplier to {:.03}...",
             frame_delay_multiplier
         );
-        self.lock_transmitter().and_then(|mut transmitter| {
-            transmitter.set_frame_delay_multiplier(frame_delay_multiplier)
-        })
+        self.lock_transmitter()
+            .await
+            .set_frame_delay_multiplier(frame_delay_multiplier)
     }
 
-    pub fn set_stored_id_filter(&mut self, filter: &StoredIdFilter) -> Result<()> {
+    pub async fn set_stored_id_filter(&mut self, filter: &StoredIdFilter) -> Result<()> {
         debug!("Changing stored ID filter to {:?}...", filter);
 
-        let mut receiver_guard = self.lock_receiver()?;
-        let mut transmitter_guard = self.lock_transmitter()?;
+        let mut receiver_guard = self.lock_receiver().await;
+        let mut transmitter_guard = self.lock_transmitter().await;
 
         let config_message = filter.to_fixed_message();
-        transmitter_guard.transmit_all(&config_message)?;
+        transmitter_guard.transmit_all(&config_message).await?;
         transmitter_guard.add_delay(CONFIGURATION_DELAY);
 
-        receiver_guard.clear()?;
+        receiver_guard.clear().await?;
 
         debug!("Done changing stored ID filter!");
         Ok(())
     }
 
-    pub fn delay(&self) -> Result<()> {
+    pub async fn delay(&self) -> Result<()> {
         debug!("Sleeping to remove receiver and transmitter delays...");
 
-        let receiver_guard = self.lock_receiver()?;
-        let transmitter_guard = self.lock_transmitter()?;
+        let receiver_guard = self.lock_receiver().await;
+        let transmitter_guard = self.lock_transmitter().await;
 
-        receiver_guard.delay();
-        transmitter_guard.delay();
+        receiver_guard.delay().await;
+        transmitter_guard.delay().await;
 
         Ok(())
     }
 
-    fn lock_configuration(&self) -> Result<MutexGuard<Usb2CanConfiguration>> {
-        self.configuration
-            .lock()
-            .map_err(|error| Error::Locking(format!("{} (configuration)", error)))
-    }
-
-    fn lock_transmitter(&self) -> Result<MutexGuard<Transmitter>> {
-        self.transmitter
-            .lock()
-            .map_err(|error| Error::Locking(format!("{} (transmitter)", error)))
-    }
-
-    fn lock_receiver(&self) -> Result<MutexGuard<Receiver>> {
-        self.receiver
-            .lock()
-            .map_err(|error| Error::Locking(format!("{} (receiver)", error)))
-    }
-}
-
-impl blocking::Can for Usb2Can {
-    type Frame = Frame;
-    type Error = Error;
-
-    fn transmit(&mut self, frame: &Frame) -> Result<()> {
+    pub async fn transmit(&mut self, frame: &Frame) -> Result<()> {
         trace!("Transmitting frame: {:?}", frame);
 
-        let mut transmitter_guard = self.lock_transmitter()?;
-        let configuration_guard = self.lock_configuration()?;
+        let mut transmitter_guard = self.lock_transmitter().await;
+        let configuration_guard = self.lock_configuration().await;
 
         if configuration_guard.variable_encoding() {
-            transmitter_guard.transmit_all(&frame.to_variable_message())?;
+            transmitter_guard
+                .transmit_all(&frame.to_variable_message())
+                .await?;
         } else {
-            transmitter_guard.transmit_all(&frame.to_fixed_message())?;
+            transmitter_guard
+                .transmit_all(&frame.to_fixed_message())
+                .await?;
         }
 
         let delay_multipyer = transmitter_guard.frame_delay_multiplier();
@@ -377,22 +317,34 @@ impl blocking::Can for Usb2Can {
         Ok(())
     }
 
-    fn receive(&mut self) -> Result<Self::Frame> {
-        let mut receiver_guard = self.lock_receiver()?;
-        let _configuration_guard = self.lock_configuration()?;
+    pub async fn receive(&mut self) -> Result<Frame> {
+        let mut receiver_guard = self.lock_receiver().await;
+        let _configuration_guard = self.lock_configuration().await;
 
-        receiver_guard.receive_frame()
+        receiver_guard.receive_frame().await
+    }
+
+    async fn lock_configuration(&self) -> MutexGuard<Usb2CanConfiguration> {
+        self.configuration.lock().await
+    }
+
+    async fn lock_transmitter(&self) -> MutexGuard<Transmitter> {
+        self.transmitter.lock().await
+    }
+
+    async fn lock_receiver(&self) -> MutexGuard<Receiver> {
+        self.receiver.lock().await
     }
 }
 
 struct Transmitter {
-    serial: Box<dyn SerialPort>,
+    serial: Arc<Mutex<SerialStream>>,
     ready_at: Instant,
     frame_delay_multiplier: f64,
 }
 
 impl Transmitter {
-    fn new(serial: Box<dyn SerialPort>) -> Self {
+    fn new(serial: Arc<Mutex<SerialStream>>) -> Self {
         Self {
             serial,
             ready_at: Instant::now(),
@@ -400,14 +352,18 @@ impl Transmitter {
         }
     }
 
-    fn name(&self) -> Result<String> {
+    async fn name(&self) -> Result<String> {
         self.serial
+            .lock()
+            .await
             .name()
             .ok_or_else(|| Error::GetConfiguration("Failed to get serial port name".into()))
     }
 
-    fn serial_baud_rate(&self) -> Result<SerialBaudRate> {
+    async fn serial_baud_rate(&self) -> Result<SerialBaudRate> {
         self.serial
+            .lock()
+            .await
             .baud_rate()
             .map_err(|error| {
                 Error::GetConfiguration(format!("Failed to get serial baud rate: {}", error))
@@ -422,9 +378,11 @@ impl Transmitter {
             })
     }
 
-    fn set_serial_baud_rate(&mut self, serial_baud_rate: SerialBaudRate) -> Result<()> {
-        self.delay();
+    async fn set_serial_baud_rate(&mut self, serial_baud_rate: SerialBaudRate) -> Result<()> {
+        self.delay().await;
         self.serial
+            .lock()
+            .await
             .set_baud_rate(u32::from(serial_baud_rate))
             .map_err(|error| {
                 Error::SetConfiguration(format!("Failed to set serial baud rate: {}", error))
@@ -446,15 +404,18 @@ impl Transmitter {
         }
     }
 
-    fn transmit_all(&mut self, message: &[u8]) -> Result<()> {
-        self.delay();
+    async fn transmit_all(&mut self, message: &[u8]) -> Result<()> {
+        self.delay().await;
         trace!("Writing into serial: {:?}", message);
-        self.serial.write_all(message)?;
-        self.serial.flush()?;
+
+        let mut serial = self.serial.lock().await;
+        serial.write_all(message).await?;
+        serial.flush().await?;
+
         Ok(())
     }
 
-    fn delay(&self) {
+    async fn delay(&self) {
         let now = Instant::now();
         if now < self.ready_at {
             let delay = self.ready_at - now;
@@ -462,7 +423,7 @@ impl Transmitter {
                 "Sleeping for {:.03}s before transmitting anything...",
                 delay.as_secs_f64()
             );
-            sleep(delay);
+            sleep(delay).await;
         }
     }
 
@@ -477,13 +438,13 @@ impl Transmitter {
 }
 
 struct Receiver {
-    serial: Box<dyn SerialPort>,
+    serial: Arc<Mutex<SerialStream>>,
     buffer: Box<dyn GenericReceiveBuffer<Error = Error> + Send>,
     ready_at: Instant,
 }
 
 impl Receiver {
-    fn new(serial: Box<dyn SerialPort>, variable: bool) -> Self {
+    fn new(serial: Arc<Mutex<SerialStream>>, variable: bool) -> Self {
         Self {
             serial,
             buffer: new_receive_buffer(variable),
@@ -497,17 +458,7 @@ impl Receiver {
         }
     }
 
-    fn receive_timeout(&self) -> Duration {
-        self.serial.timeout()
-    }
-
-    fn set_receive_timeout(&mut self, timeout: Duration) -> Result<()> {
-        self.serial.set_timeout(timeout).map_err(|error| {
-            Error::SetConfiguration(format!("Failed to set receive timeout: {}", error))
-        })
-    }
-
-    fn receive_frame(&mut self) -> Result<Frame> {
+    async fn receive_frame(&mut self) -> Result<Frame> {
         let mut buffer = [0u8; MAX_MESSAGE_SIZE];
 
         loop {
@@ -515,28 +466,19 @@ impl Receiver {
                 break Ok(frame);
             };
 
-            match self.serial.read(&mut buffer) {
-                Ok(bytes_read) => self.buffer.feed_bytes(&buffer[..bytes_read])?,
-
-                Err(error) => {
-                    if error.kind() == io::ErrorKind::TimedOut {
-                        return Err(Error::SerialReadTimedOut);
-                    } else {
-                        return Err(Error::from(error));
-                    }
-                }
-            };
+            let bytes_read = self.serial.lock().await.read(&mut buffer).await?;
+            self.buffer.feed_bytes(&buffer[..bytes_read])?;
         }
     }
 
-    fn clear(&mut self) -> Result<()> {
-        self.serial.clear(ClearBuffer::All)?;
+    async fn clear(&mut self) -> Result<()> {
+        self.serial.lock().await.clear(ClearBuffer::All)?;
         self.buffer.clear();
         self.buffer.resync();
         Ok(())
     }
 
-    fn delay(&self) {
+    async fn delay(&self) {
         let now = Instant::now();
         if now < self.ready_at {
             let delay = self.ready_at - now;
@@ -544,7 +486,7 @@ impl Receiver {
                 "Sleeping for {:.03}s before trying to receive anything...",
                 delay.as_secs_f64()
             );
-            sleep(delay);
+            sleep(delay).await;
         }
     }
 
@@ -555,52 +497,5 @@ impl Receiver {
         } else {
             self.ready_at += delay;
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use rustix::{
-        fd::OwnedFd,
-        pty::{grantpt, openpt, ptsname, unlockpt, OpenptFlags},
-    };
-
-    use super::*;
-
-    #[test]
-    fn rust_serialport_cloned_timeout() {
-        // Check that the timeout in the cloned serial port is independent of the original.
-        let (_mpt, mut port) = open_pty();
-        let mut port_clone = port.try_clone().expect("serialport::try_clone() failed");
-
-        port.set_timeout(Duration::from_secs(1)).unwrap();
-        port_clone.set_timeout(Duration::from_secs(2)).unwrap();
-
-        assert_eq!(port.timeout(), Duration::from_secs(1));
-        assert_eq!(port_clone.timeout(), Duration::from_secs(2));
-    }
-
-    #[test]
-    fn rust_serialport_large_timeout() {
-        let (_mpt, mut port) = open_pty();
-        port.set_timeout(INFINITE_TIMEOUT).unwrap();
-        port.write_all(&[0x00]).unwrap();
-    }
-
-    fn open_pty() -> (OwnedFd, Box<dyn SerialPort>) {
-        let mpt = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).expect("posix_openpt() failed");
-        grantpt(&mpt).expect("grantpt() failed");
-        unlockpt(&mpt).expect("unlockpt() failed");
-
-        let pt_path = ptsname(&mpt, vec![0u8; 1024]).expect("ptsname() failed");
-        let pt_path =
-            String::from_utf8(pt_path.into_bytes()).expect("ptsname() returned invalid UTF-8");
-
-        (
-            mpt,
-            serialport::new(pt_path, 9600)
-                .open()
-                .expect("serialport::open() failed"),
-        )
     }
 }

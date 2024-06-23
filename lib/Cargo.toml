@@ -19,13 +19,17 @@ repository = { workspace = true }
 readme = { workspace = true }
 
 [features]
-default = ["sync"]
+default = ["sync", "tokio"]
+
 sync = ["dep:serialport", "dep:tracing"]
+tokio = ["dep:tokio", "dep:tokio-serial", "dep:tracing"]
 
 [dependencies]
 embedded-can = { workspace = true }
 serialport = { workspace = true, optional = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, optional = true }
+tokio-serial = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -33,4 +37,5 @@ anyhow = { workspace = true }
 proptest = { workspace = true }
 proptest-derive = { workspace = true }
 rustix = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = { workspace = true }

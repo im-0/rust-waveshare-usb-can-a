@@ -1,4 +1,7 @@
+use std::{collections::VecDeque, fmt::Display, mem::replace};
+
 use embedded_can::{ExtendedId, Frame as FrameTrait, Id, StandardId};
+use tracing::{debug, trace};
 
 use crate::{
     CanBaudRate, Frame, SerialBaudRate, StoredIdFilter, Usb2CanConfiguration, MAX_DATA_LENGTH,
@@ -9,7 +12,7 @@ const MAX_VARIABLE_MESSAGE_SIZE: usize = 15;
 pub(crate) const MAX_MESSAGE_SIZE: usize =
     const_fn_max(MAX_FIXED_MESSAGE_SIZE, MAX_VARIABLE_MESSAGE_SIZE);
 // Should be enough to sync as leftovers of a single frame are kept in the buffers.
-pub(crate) const SYNC_ATTEMPTS: usize = MAX_MESSAGE_SIZE - 1;
+const SYNC_ATTEMPTS: usize = MAX_MESSAGE_SIZE - 1;
 
 // Protocol constants.
 const PROTO_HEADER: u8 = 0b10101010;
@@ -48,7 +51,7 @@ const fn const_fn_max(a: usize, b: usize) -> usize {
     [a, b][(a < b) as usize]
 }
 
-pub(crate) trait NewRecvUnexpectedError {
+pub(crate) trait NewRecvUnexpectedError: Display {
     fn new_recv_unexpected_error(message: impl Into<String>) -> Self;
 }
 
@@ -242,7 +245,206 @@ impl ToFixedMessage for StoredIdFilter {
     }
 }
 
-pub(crate) enum FixedFrameReceiveState {
+enum StateAdvanceResult<S> {
+    Next(S),
+    Finished(Frame),
+}
+
+trait FrameReceiveState<S> {
+    const IS_VARIABLE: bool;
+
+    fn initial() -> Self;
+    fn advance<E>(self, byte: u8) -> Result<StateAdvanceResult<S>, E>
+    where
+        E: NewRecvUnexpectedError;
+}
+
+struct ReceiveBuffer<S, E>
+where
+    S: FrameReceiveState<S>,
+    E: NewRecvUnexpectedError,
+{
+    state: S,
+    buffer: VecDeque<u8>,
+    next_byte: usize,
+    sync_attempts_left: usize,
+
+    _error: std::marker::PhantomData<E>,
+}
+
+impl<S, E> ReceiveBuffer<S, E>
+where
+    S: FrameReceiveState<S>,
+    E: NewRecvUnexpectedError,
+{
+    fn new() -> Box<Self> {
+        Box::new(Self {
+            state: S::initial(),
+            buffer: VecDeque::new(),
+            next_byte: 0,
+            sync_attempts_left: SYNC_ATTEMPTS,
+
+            _error: std::marker::PhantomData,
+        })
+    }
+
+    fn receive_frame_no_sync(&mut self) -> Result<Option<Frame>, E> {
+        for byte in self.buffer.range(self.next_byte..) {
+            let state = replace(&mut self.state, S::initial());
+
+            match state.advance(*byte) {
+                Ok(StateAdvanceResult::Next(next_state)) => {
+                    self.state = next_state;
+                    self.next_byte += 1;
+                }
+
+                Ok(StateAdvanceResult::Finished(frame)) => {
+                    self.state = S::initial();
+                    let _ = self.buffer.drain(..self.next_byte + 1);
+                    self.next_byte = 0;
+
+                    trace!("Received frame: {:?}", frame);
+                    return Ok(Some(frame));
+                }
+
+                Err(error) => {
+                    self.state = S::initial();
+                    let _ = self.buffer.pop_front();
+                    self.next_byte = 0;
+
+                    return Err(error);
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    #[cfg(test)]
+    fn remaining_bytes(&self) -> Vec<u8> {
+        self.buffer.range(self.next_byte..).cloned().collect()
+    }
+}
+
+pub(crate) trait GenericReceiveBuffer {
+    type Error: NewRecvUnexpectedError;
+
+    fn is_variable(&self) -> bool;
+    fn feed_bytes(&mut self, bytes: &[u8]) -> Result<(), Self::Error>;
+    fn receive_frame(&mut self) -> Result<Option<Frame>, Self::Error>;
+    fn clear(&mut self);
+    fn resync(&mut self);
+}
+
+impl<S, E> GenericReceiveBuffer for ReceiveBuffer<S, E>
+where
+    S: FrameReceiveState<S>,
+    E: NewRecvUnexpectedError,
+{
+    type Error = E;
+
+    fn is_variable(&self) -> bool {
+        S::IS_VARIABLE
+    }
+
+    fn feed_bytes(&mut self, bytes: &[u8]) -> Result<(), Self::Error> {
+        if bytes.is_empty() {
+            return Err(Self::Error::new_recv_unexpected_error("EOF"));
+        }
+
+        self.buffer.extend(bytes);
+        Ok(())
+    }
+
+    fn receive_frame(&mut self) -> Result<Option<Frame>, Self::Error> {
+        loop {
+            match self.receive_frame_no_sync() {
+                Ok(None) => break Ok(None),
+
+                Ok(Some(frame)) => {
+                    self.sync_attempts_left = 0;
+                    break Ok(Some(frame));
+                }
+
+                Err(error) => {
+                    debug!("Failed to sync: {}", error);
+
+                    if self.sync_attempts_left == 0 {
+                        self.resync();
+
+                        break Err(E::new_recv_unexpected_error(format!(
+                            "Failed to sync, no attempts left: {}",
+                            error,
+                        )));
+                    }
+
+                    self.sync_attempts_left -= 1;
+                }
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.state = S::initial();
+        self.buffer.clear();
+        self.next_byte = 0;
+    }
+
+    fn resync(&mut self) {
+        self.sync_attempts_left = SYNC_ATTEMPTS;
+    }
+}
+
+pub(crate) fn new_receive_buffer<E>(
+    variable: bool,
+) -> Box<dyn GenericReceiveBuffer<Error = E> + Send>
+where
+    E: NewRecvUnexpectedError + Send + 'static,
+{
+    if variable {
+        ReceiveBuffer::<VariableFrameReceiveState, E>::new()
+    } else {
+        ReceiveBuffer::<FixedFrameReceiveState, E>::new()
+    }
+}
+
+struct FixedFrameReceiveState {
+    state: FixedFrameReceiveStateInner,
+    checksum: u8,
+}
+
+impl FrameReceiveState<Self> for FixedFrameReceiveState {
+    const IS_VARIABLE: bool = false;
+
+    fn initial() -> Self {
+        Self {
+            state: FixedFrameReceiveStateInner::HeaderOrHeaderFixed,
+            checksum: 0,
+        }
+    }
+
+    fn advance<E>(self, byte: u8) -> Result<StateAdvanceResult<Self>, E>
+    where
+        E: NewRecvUnexpectedError,
+    {
+        let checksum = if self.state.is_part_of_checksum() {
+            self.checksum.wrapping_add(byte)
+        } else {
+            self.checksum
+        };
+
+        match self.state.advance(byte, checksum)? {
+            StateAdvanceResult::Next(next_state) => Ok(StateAdvanceResult::Next(Self {
+                state: next_state,
+                checksum,
+            })),
+
+            StateAdvanceResult::Finished(frame) => Ok(StateAdvanceResult::Finished(frame)),
+        }
+    }
+}
+
+enum FixedFrameReceiveStateInner {
     HeaderOrHeaderFixed,
     HeaderFixed,
     HeaderFrame,
@@ -269,58 +471,26 @@ pub(crate) enum FixedFrameReceiveState {
     },
     Reserved(PartialFrame),
     Checksum(PartialFrame),
-    Finished {
-        checksum: u8,
-        frame: PartialFrame,
-    },
 }
 
-impl FixedFrameReceiveState {
-    pub(crate) fn read_frame<E>(read_byte: &mut impl FnMut() -> Result<u8, E>) -> Result<Frame, E>
-    where
-        E: NewRecvUnexpectedError,
-    {
-        let mut state = Self::HeaderOrHeaderFixed;
+impl FixedFrameReceiveStateInner {
+    const fn is_part_of_checksum(&self) -> bool {
+        match self {
+            Self::HeaderFrame
+            | Self::StandardOrExtended
+            | Self::DataOrRemote { .. }
+            | Self::Id { .. }
+            | Self::SkipUnusedId { .. }
+            | Self::DataLength(_)
+            | Self::Data { .. }
+            | Self::SkipUnusedData { .. }
+            | Self::Reserved { .. } => true,
 
-        let mut our_checksum = 0u8;
-
-        loop {
-            let byte = read_byte()?;
-
-            match state {
-                Self::HeaderFrame
-                | Self::StandardOrExtended
-                | Self::DataOrRemote { .. }
-                | Self::Id { .. }
-                | Self::SkipUnusedId { .. }
-                | Self::DataLength(_)
-                | Self::Data { .. }
-                | Self::SkipUnusedData { .. }
-                | Self::Reserved { .. } => {
-                    our_checksum = our_checksum.wrapping_add(byte);
-                }
-
-                Self::HeaderOrHeaderFixed
-                | Self::HeaderFixed
-                | Self::Checksum(_)
-                | Self::Finished { .. } => {}
-            }
-
-            state = state.advance(byte)?;
-            if let Self::Finished { checksum, frame } = state {
-                if checksum == our_checksum {
-                    break Ok(frame.into());
-                } else {
-                    break Err(E::new_recv_unexpected_error(format!(
-                        "Wrong checksum, message has 0x{:02x} (calculated 0x{:02x})",
-                        checksum, our_checksum
-                    )));
-                }
-            }
+            Self::HeaderOrHeaderFixed | Self::HeaderFixed | Self::Checksum(_) => false,
         }
     }
 
-    fn advance<E>(self, byte: u8) -> Result<Self, E>
+    fn advance<E>(self, byte: u8, checksum: u8) -> Result<StateAdvanceResult<Self>, E>
     where
         E: NewRecvUnexpectedError,
     {
@@ -501,18 +671,23 @@ impl FixedFrameReceiveState {
                 )))
             }
 
-            (Self::Checksum(frame), byte) => Self::Finished { checksum: byte, frame },
-
-            (Self::Finished { .. }, _) => {
-                unreachable!("Logic error: trying to advance finished state")
+            (Self::Checksum(frame), byte) => {
+                if byte == checksum {
+                    return Ok(StateAdvanceResult::Finished(frame.into()))
+                } else {
+                    return Err(E::new_recv_unexpected_error(format!(
+                        "Wrong checksum, message has 0x{:02x} (calculated 0x{:02x})",
+                        byte, checksum
+                    )))
+                }
             }
         };
 
-        Ok(next_state)
+        Ok(StateAdvanceResult::Next(next_state))
     }
 }
 
-pub(crate) enum VariableFrameReceiveState {
+enum VariableFrameReceiveState {
     EndOrHeader,
     Header,
     Type,
@@ -528,25 +703,16 @@ pub(crate) enum VariableFrameReceiveState {
         bytes_left: usize,
         frame: PartialFrame,
     },
-    Finished(PartialFrame),
 }
 
-impl VariableFrameReceiveState {
-    pub(crate) fn read_frame<E>(read_byte: &mut impl FnMut() -> Result<u8, E>) -> Result<Frame, E>
-    where
-        E: NewRecvUnexpectedError,
-    {
-        let mut state = Self::EndOrHeader;
+impl FrameReceiveState<Self> for VariableFrameReceiveState {
+    const IS_VARIABLE: bool = true;
 
-        Ok(loop {
-            state = state.advance(read_byte()?)?;
-            if let Self::Finished(frame) = state {
-                break frame.into();
-            }
-        })
+    fn initial() -> Self {
+        Self::EndOrHeader
     }
 
-    fn advance<E>(self, byte: u8) -> Result<Self, E>
+    fn advance<E>(self, byte: u8) -> Result<StateAdvanceResult<Self>, E>
     where
         E: NewRecvUnexpectedError,
     {
@@ -626,7 +792,7 @@ impl VariableFrameReceiveState {
                             frame,
                         }
                     } else if frame.data.is_empty() {
-                        Self::Finished(frame)
+                        return Ok(StateAdvanceResult::Finished(frame.into()));
                     } else {
                         Self::Data { byte_n: 0, frame }
                     }
@@ -652,7 +818,7 @@ impl VariableFrameReceiveState {
 
                     byte_n += 1;
                     if byte_n == frame.data.len() {
-                        Self::Finished(frame)
+                        return Ok(StateAdvanceResult::Finished(frame.into()));
                     } else {
                         Self::Data { byte_n, frame }
                     }
@@ -668,18 +834,14 @@ impl VariableFrameReceiveState {
             ) => {
                 bytes_left -= 1;
                 if bytes_left == 0 {
-                    Self::Finished(frame)
+                    return Ok(StateAdvanceResult::Finished(frame.into()));
                 } else {
                     Self::SkipRemote { bytes_left, frame }
                 }
             }
-
-            (Self::Finished(_), _) => {
-                unreachable!("Logic error: trying to advance finished state")
-            }
         };
 
-        Ok(next_state)
+        Ok(StateAdvanceResult::Next(next_state))
     }
 }
 
@@ -779,7 +941,7 @@ where
     }
 }
 
-pub(crate) struct PartialFrame {
+struct PartialFrame {
     id: Id,
     is_remote: bool,
     dlc: usize,
@@ -885,12 +1047,20 @@ fn generate_checksum(message: &mut [u8]) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::{self, Formatter};
+
     use proptest::{arbitrary::any, collection::vec, proptest};
 
     use super::*;
 
     #[derive(Debug)]
     struct RecvUnexpected;
+
+    impl Display for RecvUnexpected {
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+            write!(f, "RecvUnexpected()")
+        }
+    }
 
     impl NewRecvUnexpectedError for RecvUnexpected {
         fn new_recv_unexpected_error(_message: impl Into<String>) -> Self {
@@ -1304,30 +1474,32 @@ mod tests {
 
     fn check_variable_serialize_deserialize_frame(frame: &Frame) {
         let message = frame.to_variable_message();
-        let mut reader_fn = into_reader_fn(message);
 
-        let received_frame = VariableFrameReceiveState::read_frame(&mut reader_fn).unwrap();
+        let mut receiver = ReceiveBuffer::<VariableFrameReceiveState, RecvUnexpected>::new();
+        receiver.feed_bytes(&message).unwrap();
+        let received_frame = receiver
+            .receive_frame()
+            .expect("Failed to receive test frame")
+            .expect("Not enough data to receive test frame");
 
-        assert_eq!(reader_fn().unwrap(), PROTO_VARIABLE_END);
-        assert!(reader_fn().is_err());
+        assert_eq!(receiver.remaining_bytes(), [PROTO_VARIABLE_END]);
 
         assert_eq!(frame, &received_frame);
     }
 
     fn check_fixed_serialize_deserialize_frame(frame: &Frame) {
         let message = frame.to_fixed_message();
-        let mut reader_fn = into_reader_fn(message.to_vec());
 
-        let received_frame = FixedFrameReceiveState::read_frame(&mut reader_fn).unwrap();
+        let mut receiver = ReceiveBuffer::<FixedFrameReceiveState, RecvUnexpected>::new();
+        receiver.feed_bytes(&message).unwrap();
+        let received_frame = receiver
+            .receive_frame()
+            .expect("Failed to receive test frame")
+            .expect("Not enough data to receive test frame");
 
-        assert!(reader_fn().is_err());
+        assert_eq!(receiver.remaining_bytes(), []);
 
         assert_eq!(frame, &received_frame);
-    }
-
-    fn into_reader_fn(data: Vec<u8>) -> impl FnMut() -> Result<u8, RecvUnexpected> {
-        let mut iter = data.into_iter();
-        move || iter.next().ok_or(RecvUnexpected {})
     }
 
     #[test]
