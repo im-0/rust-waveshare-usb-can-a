@@ -36,6 +36,9 @@ use embedded_can::{ExtendedId, Frame as FrameTrait, Id};
 use thiserror::Error;
 
 mod proto;
+#[cfg(test)]
+mod tests;
+
 #[cfg(feature = "sync")]
 pub mod sync;
 #[cfg(feature = "tokio")]
@@ -519,48 +522,5 @@ impl Display for Frame {
         }
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use embedded_can::{ExtendedId, StandardId};
-    use proptest::{arbitrary::any, collection::vec, proptest};
-
-    use super::*;
-
-    #[test]
-    fn invalid_filter_conf() {
-        let conf = Usb2CanConfiguration::new(CanBaudRate::R1000kBd);
-        let conf = conf.set_filter(StandardId::ZERO.into(), ExtendedId::ZERO.into());
-        assert!(matches!(conf, Err(CommonConfigurationError::Error(_))));
-
-        let conf = Usb2CanConfiguration::new(CanBaudRate::R1000kBd);
-        let conf = conf.set_filter(ExtendedId::ZERO.into(), StandardId::ZERO.into());
-        assert!(matches!(conf, Err(CommonConfigurationError::Error(_))));
-    }
-
-    proptest! {
-        #[test]
-        fn random_length_bound_frame_standard(
-                id in StandardId::ZERO.as_raw()..=StandardId::MAX.as_raw(),
-                data in vec(any::<u8>(), 0..=MAX_DATA_LENGTH),
-        ) {
-            let id = StandardId::new(id).expect("Logic error: proptest produced invalid standard ID");
-            let frame = Frame::new(id, &data).unwrap();
-            // https://en.wikipedia.org/wiki/CAN_bus#Bit_stuffing
-            assert!(frame.length_bound_in_bits() <= 132 + 3);
-        }
-
-        #[test]
-        fn random_length_bound_frame_extended(
-                id in ExtendedId::ZERO.as_raw()..=ExtendedId::MAX.as_raw(),
-                data in vec(any::<u8>(), 0..=MAX_DATA_LENGTH),
-        ) {
-            let id = ExtendedId::new(id).expect("Logic error: proptest produced invalid standard ID");
-            let frame = Frame::new(id, &data).unwrap();
-            // https://en.wikipedia.org/wiki/CAN_bus#Bit_stuffing
-            assert!(frame.length_bound_in_bits() <= 157 + 3);
-        }
     }
 }

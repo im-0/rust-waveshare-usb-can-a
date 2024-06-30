@@ -1,21 +1,15 @@
-use std::env;
-use std::io::stderr;
-use std::sync::Once;
-
 use anyhow::{Context, Result};
 use embedded_can::{ExtendedId, Frame as _, Id, StandardId};
 use tracing::info;
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
-use waveshare_usb_can_a::{
+
+use crate::tests::{initialize_test, invert_frame};
+use crate::{
     tokio::Usb2Can, CanBaudRate, Frame, SerialBaudRate, StoredIdFilter, Usb2CanConfiguration,
 };
 
 #[tokio::test]
 #[ignore]
-async fn tokio_stored_id_filter() -> Result<()> {
+async fn stored_id_filter() -> Result<()> {
     let (serial_path, second_serial_path, send_frames) = initialize_test()?;
 
     info!("Testing stored ID filter...");
@@ -26,13 +20,13 @@ async fn tokio_stored_id_filter() -> Result<()> {
         .set_silent(second_serial_path.is_none() && !send_frames)
         .set_automatic_retransmission(false);
 
-    let mut usb2can_a = waveshare_usb_can_a::tokio::new(serial_path, &usb2can_conf)
+    let mut usb2can_a = crate::tokio::new(serial_path, &usb2can_conf)
         .open()
         .await
         .context("Failed to open USB2CAN device")?;
 
     let mut usb2can_b = if let Some(ref second_serial_path) = second_serial_path {
-        waveshare_usb_can_a::tokio::new(second_serial_path, &usb2can_conf)
+        crate::tokio::new(second_serial_path, &usb2can_conf)
             .open()
             .await
             .context("Failed to open second USB2CAN device")?
@@ -107,7 +101,7 @@ async fn tokio_stored_id_filter() -> Result<()> {
 
 #[tokio::test]
 #[ignore]
-async fn tokio_can_rates_frame_types_and_filtering() -> Result<()> {
+async fn can_rates_frame_types_and_filtering() -> Result<()> {
     let (serial_path, second_serial_path, send_frames) = initialize_test()?;
 
     info!("Testing all supported CAN baud rates, frame types, and filtering...");
@@ -118,12 +112,12 @@ async fn tokio_can_rates_frame_types_and_filtering() -> Result<()> {
         .set_silent(second_serial_path.is_none() && !send_frames)
         .set_automatic_retransmission(false);
 
-    let mut usb2can_a = waveshare_usb_can_a::tokio::new(serial_path, &usb2can_conf)
+    let mut usb2can_a = crate::tokio::new(serial_path, &usb2can_conf)
         .open()
         .await
         .context("Failed to open USB2CAN device")?;
     let mut usb2can_b = if let Some(ref second_serial_path) = second_serial_path {
-        waveshare_usb_can_a::tokio::new(second_serial_path, &usb2can_conf)
+        crate::tokio::new(second_serial_path, &usb2can_conf)
             .open()
             .await
             .context("Failed to open second USB2CAN device")?
@@ -250,7 +244,7 @@ async fn tokio_can_rates_frame_types_and_filtering() -> Result<()> {
 
 #[tokio::test]
 #[ignore]
-async fn tokio_serial_rates() -> Result<()> {
+async fn serial_rates() -> Result<()> {
     let (serial_path, second_serial_path, send_frames) = initialize_test()?;
 
     info!("Testing all supported serial baud rates...");
@@ -261,13 +255,13 @@ async fn tokio_serial_rates() -> Result<()> {
         .set_silent(second_serial_path.is_none() && !send_frames)
         .set_automatic_retransmission(false);
 
-    let mut usb2can_a = waveshare_usb_can_a::tokio::new(serial_path, &usb2can_conf)
+    let mut usb2can_a = crate::tokio::new(serial_path, &usb2can_conf)
         .open()
         .await
         .context("Failed to open USB2CAN device")?;
 
     let mut usb2can_b = if let Some(ref second_serial_path) = second_serial_path {
-        waveshare_usb_can_a::tokio::new(second_serial_path, &usb2can_conf)
+        crate::tokio::new(second_serial_path, &usb2can_conf)
             .open()
             .await
             .context("Failed to open second USB2CAN device")?
@@ -322,30 +316,6 @@ async fn tokio_serial_rates() -> Result<()> {
     }
 
     Ok(())
-}
-
-fn initialize_test() -> Result<(String, Option<String>, bool)> {
-    // Configure logging.
-    static CONFIGURE_LOGGING_ONCE: Once = Once::new();
-    CONFIGURE_LOGGING_ONCE.call_once(|| {
-        tracing_subscriber::registry()
-            .with(tracing_subscriber::fmt::layer().with_writer(stderr))
-            .with(
-                EnvFilter::builder()
-                    .with_default_directive(LevelFilter::TRACE.into())
-                    .from_env_lossy(),
-            )
-            .init()
-    });
-
-    // HW configuration.
-    let serial_path = env::var("HW_TEST_SERIAL_PATH").context("Missing environment variable")?;
-    let second_serial_path = env::var("HW_TEST_SECOND_SERIAL_PATH").ok();
-    let send_frames = env::var("HW_TEST_SEND_FRAMES")
-        .map(|s| s == "1")
-        .unwrap_or(false);
-
-    Ok((serial_path, second_serial_path, send_frames))
 }
 
 async fn self_test_one_way(
@@ -419,26 +389,6 @@ async fn check_echo(
     }
 
     Ok(())
-}
-
-fn invert_frame(frame: &Frame) -> Frame {
-    let data = frame.data().iter().map(|byte| !byte).collect::<Vec<_>>();
-
-    let id = match frame.id() {
-        Id::Standard(id) => {
-            Id::Standard(StandardId::new(id.as_raw() ^ 0x0f).expect("Logic error: bad inverted ID"))
-        }
-        Id::Extended(id) => {
-            Id::Extended(ExtendedId::new(id.as_raw() ^ 0x0f).expect("Logic error: bad inverted ID"))
-        }
-    };
-
-    if frame.is_data_frame() {
-        Frame::new(id, &data)
-    } else {
-        Frame::new_remote(id, frame.dlc())
-    }
-    .expect("Logic error: bad inverted frame")
 }
 
 async fn transmit(usb2can: &mut Usb2Can, frame: &Frame) -> Result<()> {
