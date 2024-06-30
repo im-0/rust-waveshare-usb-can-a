@@ -1,8 +1,11 @@
+use std::future::Future;
+
 use anyhow::{Context, Result};
 use embedded_can::{ExtendedId, Frame as _, Id, StandardId};
 use tracing::info;
 
 use crate::tests::{initialize_test, invert_frame};
+use crate::tokio::Usb2CanBuilder;
 use crate::{
     tokio::Usb2Can, CanBaudRate, Frame, SerialBaudRate, StoredIdFilter, Usb2CanConfiguration,
 };
@@ -14,44 +17,27 @@ async fn stored_id_filter() -> Result<()> {
 
     info!("Testing stored ID filter...");
 
-    // Open USB2CAN adapter.
+    // Open USB2CAN adapters.
     let usb2can_conf = Usb2CanConfiguration::new(CanBaudRate::R5kBd)
         .set_loopback(second_serial_path.is_none())
         .set_silent(second_serial_path.is_none() && !send_frames)
         .set_automatic_retransmission(false);
 
-    let mut usb2can_a = crate::tokio::new(serial_path, &usb2can_conf)
-        .open()
-        .await
-        .context("Failed to open USB2CAN device")?;
-
-    let mut usb2can_b = if let Some(ref second_serial_path) = second_serial_path {
-        crate::tokio::new(second_serial_path, &usb2can_conf)
-            .open()
-            .await
-            .context("Failed to open second USB2CAN device")?
-    } else {
-        usb2can_a.clone()
-    };
+    let (mut usb2can_a, mut usb2can_b) =
+        open_adapters(&serial_path, &second_serial_path, &usb2can_conf).await?;
 
     // Blocklist filter.
     let filter = StoredIdFilter::new_block(vec![ExtendedId::ZERO.into()])
         .context("Failed to create blocklist filter")?;
-    usb2can_a
-        .set_stored_id_filter(&filter)
-        .await
-        .context("Failed to set blocklist filter")?;
-    if second_serial_path.is_some() {
-        usb2can_b
+    reconfigure_adapters(&mut usb2can_a, &mut usb2can_b, |usb2can| async {
+        usb2can
             .set_stored_id_filter(&filter)
             .await
-            .context("Failed to set blocklist filter on second USB2CAN device")?;
-    }
+            .context("Failed to set blocklist filter")
+    })
+    .await?;
 
-    self_test_one_way(&mut usb2can_b, &mut usb2can_a, true, true).await?;
-    if second_serial_path.is_some() {
-        self_test_one_way(&mut usb2can_a, &mut usb2can_b, true, true).await?;
-    }
+    self_test(&mut usb2can_a, &mut usb2can_b, true, true).await?;
 
     // Allowlist filter.
     let filter = StoredIdFilter::new_allow(vec![
@@ -61,40 +47,28 @@ async fn stored_id_filter() -> Result<()> {
         ),
     ])
     .context("Failed to create allowlist filter")?;
-    usb2can_a
-        .set_stored_id_filter(&filter)
-        .await
-        .context("Failed to set blocklist filter")?;
-    if second_serial_path.is_some() {
-        usb2can_b
+    reconfigure_adapters(&mut usb2can_a, &mut usb2can_b, |usb2can| async {
+        usb2can
             .set_stored_id_filter(&filter)
             .await
-            .context("Failed to set blocklist filter on second USB2CAN device")?;
-    }
+            .context("Failed to set allowlist filter")
+    })
+    .await?;
 
-    self_test_one_way(&mut usb2can_b, &mut usb2can_a, true, true).await?;
-    if second_serial_path.is_some() {
-        self_test_one_way(&mut usb2can_a, &mut usb2can_b, true, true).await?;
-    }
+    self_test(&mut usb2can_a, &mut usb2can_b, true, true).await?;
 
     // Disable filter.
     info!("Disabling stored ID filter...");
     let filter = StoredIdFilter::new_disabled();
-    usb2can_a
-        .set_stored_id_filter(&filter)
-        .await
-        .context("Failed to set blocklist filter")?;
-    if second_serial_path.is_some() {
-        usb2can_b
+    reconfigure_adapters(&mut usb2can_a, &mut usb2can_b, |usb2can| async {
+        usb2can
             .set_stored_id_filter(&filter)
             .await
-            .context("Failed to set blocklist filter on second USB2CAN device")?;
-    }
+            .context("Failed to set disabled filter")
+    })
+    .await?;
 
-    self_test_one_way(&mut usb2can_b, &mut usb2can_a, false, true).await?;
-    if second_serial_path.is_some() {
-        self_test_one_way(&mut usb2can_a, &mut usb2can_b, false, true).await?;
-    }
+    self_test(&mut usb2can_a, &mut usb2can_b, false, true).await?;
 
     Ok(())
 }
@@ -106,24 +80,14 @@ async fn can_rates_frame_types_and_filtering() -> Result<()> {
 
     info!("Testing all supported CAN baud rates, frame types, and filtering...");
 
-    // Open USB2CAN adapter.
+    // Open USB2CAN adapters.
     let usb2can_conf = Usb2CanConfiguration::new(CanBaudRate::R5kBd)
         .set_loopback(second_serial_path.is_none())
         .set_silent(second_serial_path.is_none() && !send_frames)
         .set_automatic_retransmission(false);
 
-    let mut usb2can_a = crate::tokio::new(serial_path, &usb2can_conf)
-        .open()
-        .await
-        .context("Failed to open USB2CAN device")?;
-    let mut usb2can_b = if let Some(ref second_serial_path) = second_serial_path {
-        crate::tokio::new(second_serial_path, &usb2can_conf)
-            .open()
-            .await
-            .context("Failed to open second USB2CAN device")?
-    } else {
-        usb2can_a.clone()
-    };
+    let (mut usb2can_a, mut usb2can_b) =
+        open_adapters(&serial_path, &second_serial_path, &usb2can_conf).await?;
 
     for variable_encoding in [false, true] {
         for can_baud_rate in [
@@ -162,14 +126,6 @@ async fn can_rates_frame_types_and_filtering() -> Result<()> {
                         (id, id)
                     };
 
-                    let usb2can_conf = usb2can_a
-                        .configuration()
-                        .await?
-                        .set_variable_encoding(variable_encoding)
-                        .set_can_baud_rate(can_baud_rate)
-                        .set_filter(filter, mask)?;
-                    usb2can_a.set_configuration(&usb2can_conf).await?;
-
                     info!(
                         "Running tests with {} encoding, CAN baud rate {}, {} frames, {}...",
                         if variable_encoding {
@@ -189,51 +145,22 @@ async fn can_rates_frame_types_and_filtering() -> Result<()> {
                             "without filtering"
                         }
                     );
-                    if second_serial_path.is_some() {
-                        usb2can_b.set_configuration(&usb2can_conf).await?;
-                        self_test_one_way(
-                            &mut usb2can_b,
-                            &mut usb2can_a,
-                            filtering,
-                            extended_frame,
-                        )
-                        .await?;
 
-                        info!(
-                            "Running tests with {} encoding, baud rate {}, {} frames, {}, reverse...",
-                            if variable_encoding {
-                                "variable"
-                            } else {
-                                "fixed"
-                            },
-                            can_baud_rate,
-                            if extended_frame {
-                                "extended"
-                            } else {
-                                "standard"
-                            },
-                            if filtering {
-                                "with filtering"
-                            } else {
-                                "without filtering"
-                            }
-                        );
-                        self_test_one_way(
-                            &mut usb2can_a,
-                            &mut usb2can_b,
-                            filtering,
-                            extended_frame,
-                        )
-                        .await?;
-                    } else {
-                        self_test_one_way(
-                            &mut usb2can_b,
-                            &mut usb2can_a,
-                            filtering,
-                            extended_frame,
-                        )
-                        .await?;
-                    };
+                    let usb2can_conf = usb2can_a
+                        .configuration()
+                        .await?
+                        .set_variable_encoding(variable_encoding)
+                        .set_can_baud_rate(can_baud_rate)
+                        .set_filter(filter, mask)?;
+                    reconfigure_adapters(&mut usb2can_a, &mut usb2can_b, |usb2can| async {
+                        usb2can
+                            .set_configuration(&usb2can_conf)
+                            .await
+                            .context("Failed to set new adapter configuration")
+                    })
+                    .await?;
+
+                    self_test(&mut usb2can_a, &mut usb2can_b, filtering, extended_frame).await?;
                 }
             }
         }
@@ -249,25 +176,14 @@ async fn serial_rates() -> Result<()> {
 
     info!("Testing all supported serial baud rates...");
 
-    // Open USB2CAN adapter.
+    // Open USB2CAN adapters.
     let usb2can_conf = Usb2CanConfiguration::new(CanBaudRate::R5kBd)
         .set_loopback(second_serial_path.is_none())
         .set_silent(second_serial_path.is_none() && !send_frames)
         .set_automatic_retransmission(false);
 
-    let mut usb2can_a = crate::tokio::new(serial_path, &usb2can_conf)
-        .open()
-        .await
-        .context("Failed to open USB2CAN device")?;
-
-    let mut usb2can_b = if let Some(ref second_serial_path) = second_serial_path {
-        crate::tokio::new(second_serial_path, &usb2can_conf)
-            .open()
-            .await
-            .context("Failed to open second USB2CAN device")?
-    } else {
-        usb2can_a.clone()
-    };
+    let (mut usb2can_a, mut usb2can_b) =
+        open_adapters(&serial_path, &second_serial_path, &usb2can_conf).await?;
 
     for serial_baud_rate in [
         SerialBaudRate::R9600Bd,
@@ -282,37 +198,94 @@ async fn serial_rates() -> Result<()> {
             serial_baud_rate
         );
 
-        usb2can_a
-            .set_serial_baud_rate(serial_baud_rate)
-            .await
-            .context("Failed to set serial baud rate of USB2CAN device to test value")?;
-        if second_serial_path.is_some() {
-            usb2can_b
+        reconfigure_adapters(&mut usb2can_a, &mut usb2can_b, |usb2can| async {
+            usb2can
                 .set_serial_baud_rate(serial_baud_rate)
                 .await
-                .context("Failed to set serial baud rate of second USB2CAN device to test value")?;
-        }
+                .context("Failed to set serial baud rate of USB2CAN device to test value")
+        })
+        .await?;
 
-        self_test_one_way(&mut usb2can_b, &mut usb2can_a, false, true).await?;
-        if second_serial_path.is_some() {
-            info!(
-                "Running tests with serial baud rate {}, reverse...",
-                serial_baud_rate
-            );
-            self_test_one_way(&mut usb2can_a, &mut usb2can_b, false, true).await?;
-        }
+        self_test(&mut usb2can_a, &mut usb2can_b, false, true).await?;
     }
 
     info!("Resetting to the original serial baud rate value...");
-    usb2can_a
-        .set_serial_baud_rate(SerialBaudRate::R2000000Bd)
-        .await
-        .context("Failed to set serial baud rate of USB2CAN device to orinal value")?;
-    if second_serial_path.is_some() {
-        usb2can_b
+    reconfigure_adapters(&mut usb2can_a, &mut usb2can_b, |usb2can| async {
+        usb2can
             .set_serial_baud_rate(SerialBaudRate::R2000000Bd)
             .await
-            .context("Failed to set serial baud rate of second USB2CAN device to orinal value")?;
+            .context("Failed to set serial baud rate of USB2CAN device to original value")
+    })
+    .await?;
+
+    Ok(())
+}
+
+async fn open_adapters(
+    serial_path: &str,
+    second_serial_path: &Option<String>,
+    usb2can_conf: &Usb2CanConfiguration,
+) -> Result<(Usb2Can, Option<Usb2Can>)> {
+    open_adapters_custom(serial_path, second_serial_path, usb2can_conf, |builder| {
+        Ok(builder)
+    })
+    .await
+}
+
+async fn open_adapters_custom(
+    serial_path: &str,
+    second_serial_path: &Option<String>,
+    usb2can_conf: &Usb2CanConfiguration,
+    builder_adjust_fn: impl Fn(Usb2CanBuilder) -> Result<Usb2CanBuilder>,
+) -> Result<(Usb2Can, Option<Usb2Can>)> {
+    // Open USB2CAN adapters.
+    let usb2can_a = builder_adjust_fn(crate::tokio::new(serial_path, usb2can_conf))?
+        .open()
+        .await
+        .context("Failed to open USB2CAN device")?;
+
+    let usb2can_b = if let Some(ref second_serial_path) = second_serial_path {
+        Some(
+            builder_adjust_fn(crate::tokio::new(second_serial_path, usb2can_conf))
+                .context("Second device")?
+                .open()
+                .await
+                .context("Failed to open second USB2CAN device")?,
+        )
+    } else {
+        None
+    };
+
+    Ok((usb2can_a, usb2can_b))
+}
+
+async fn reconfigure_adapters<'a, Fut>(
+    usb2can_a: &'a mut Usb2Can,
+    usb2can_b: &'a mut Option<Usb2Can>,
+    reconfigure_fn: impl Fn(&'a mut Usb2Can) -> Fut,
+) -> Result<()>
+where
+    Fut: Future<Output = Result<()>>,
+{
+    reconfigure_fn(usb2can_a).await?;
+    if let Some(usb2can_b) = usb2can_b {
+        reconfigure_fn(usb2can_b).await.context("Second device")?;
+    }
+
+    Ok(())
+}
+
+async fn self_test(
+    usb2can_a: &mut Usb2Can,
+    usb2can_b: &mut Option<Usb2Can>,
+    filtering: bool,
+    extended_frame: bool,
+) -> Result<()> {
+    if let Some(usb2can_b) = usb2can_b {
+        self_test_one_way(usb2can_a, usb2can_b, filtering, extended_frame).await?;
+        self_test_one_way(usb2can_b, usb2can_a, filtering, extended_frame).await?;
+    } else {
+        self_test_one_way(usb2can_a, &mut usb2can_a.clone(), filtering, extended_frame).await?;
     }
 
     Ok(())
