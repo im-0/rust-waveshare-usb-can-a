@@ -2,6 +2,7 @@ use std::future::Future;
 
 use anyhow::{Context, Result};
 use embedded_can::{ExtendedId, Frame as _, Id, StandardId};
+use tokio::try_join;
 use tracing::info;
 
 use crate::tests::{initialize_test, invert_frame};
@@ -239,12 +240,31 @@ async fn open_adapters_custom(
     builder_adjust_fn: impl Fn(Usb2CanBuilder) -> Result<Usb2CanBuilder>,
 ) -> Result<(Usb2Can, Option<Usb2Can>)> {
     // Open USB2CAN adapters.
+    try_join!(
+        open_adapter_custom_a(serial_path, usb2can_conf, &builder_adjust_fn),
+        open_adapter_custom_b(second_serial_path, usb2can_conf, &builder_adjust_fn)
+    )
+}
+
+async fn open_adapter_custom_a(
+    serial_path: &str,
+    usb2can_conf: &Usb2CanConfiguration,
+    builder_adjust_fn: &impl Fn(Usb2CanBuilder) -> Result<Usb2CanBuilder>,
+) -> Result<Usb2Can> {
     let usb2can_a = builder_adjust_fn(crate::tokio::new(serial_path, usb2can_conf))?
         .open()
         .await
         .context("Failed to open USB2CAN device")?;
 
-    let usb2can_b = if let Some(ref second_serial_path) = second_serial_path {
+    Ok(usb2can_a)
+}
+
+async fn open_adapter_custom_b(
+    second_serial_path: &Option<String>,
+    usb2can_conf: &Usb2CanConfiguration,
+    builder_adjust_fn: &impl Fn(Usb2CanBuilder) -> Result<Usb2CanBuilder>,
+) -> Result<Option<Usb2Can>> {
+    let usb2can = if let Some(ref second_serial_path) = second_serial_path {
         Some(
             builder_adjust_fn(crate::tokio::new(second_serial_path, usb2can_conf))
                 .context("Second device")?
@@ -256,7 +276,7 @@ async fn open_adapters_custom(
         None
     };
 
-    Ok((usb2can_a, usb2can_b))
+    Ok(usb2can)
 }
 
 async fn reconfigure_adapters<'a, Fut>(
@@ -267,10 +287,13 @@ async fn reconfigure_adapters<'a, Fut>(
 where
     Fut: Future<Output = Result<()>>,
 {
-    reconfigure_fn(usb2can_a).await?;
-    if let Some(usb2can_b) = usb2can_b {
-        reconfigure_fn(usb2can_b).await.context("Second device")?;
-    }
+    try_join!(reconfigure_fn(usb2can_a), async move {
+        if let Some(usb2can_b) = usb2can_b {
+            reconfigure_fn(usb2can_b).await.context("Second device")
+        } else {
+            Ok(())
+        }
+    },)?;
 
     Ok(())
 }
