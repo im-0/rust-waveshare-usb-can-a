@@ -208,7 +208,6 @@ fn run_perf(args: &cli::Cli, options: &cli::PerfOptions) -> Result<()> {
         PerfSubCommand::Transmit => perf_transmit(&mut usb2can),
         PerfSubCommand::Receive => perf_receive(&mut usb2can),
     }
-    // Inject frames into CAN bus.
 }
 
 fn perf_transmit(usb2can: &mut Usb2Can) -> Result<()> {
