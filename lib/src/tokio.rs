@@ -134,14 +134,17 @@ impl Usb2CanBuilder {
             self.adapter_configuration.variable_encoding(),
         );
 
-        let mut transmitter = Transmitter::new(serial);
+        let blink_delay = self.serial_baud_rate.to_blink_delay();
+        let mut transmitter = Transmitter::new(serial, blink_delay);
         transmitter.set_frame_delay_multiplier(self.frame_delay_multiplier)?;
 
         if with_blink_delay {
-            let delay = self.serial_baud_rate.to_blink_delay();
-            debug!("Initial blink delay enabled: {:.03}s", delay.as_secs_f64());
-            receiver.add_delay(delay);
-            transmitter.add_delay(delay);
+            debug!(
+                "Initial blink delay enabled: {:.03}s",
+                blink_delay.as_secs_f64()
+            );
+            receiver.add_delay(blink_delay);
+            transmitter.add_delay(blink_delay);
         };
 
         let mut usb2can = Usb2Can {
@@ -233,10 +236,11 @@ impl Usb2Can {
         transmitter_guard.transmit_all(&config_message).await?;
 
         // Adapater does not respond while blinking.
-        let delay = serial_baud_rate.to_blink_delay();
+        let blink_delay = serial_baud_rate.to_blink_delay();
+        transmitter_guard.set_blink_delay(blink_delay);
 
-        receiver_guard.add_delay(delay);
-        transmitter_guard.add_delay(delay);
+        receiver_guard.add_delay(blink_delay);
+        transmitter_guard.add_delay(blink_delay);
 
         // Set the new baud rate on underlying serial interface.
         transmitter_guard
@@ -270,7 +274,10 @@ impl Usb2Can {
 
         let config_message = filter.to_fixed_message();
         transmitter_guard.transmit_all(&config_message).await?;
-        transmitter_guard.add_delay(CONFIGURATION_DELAY);
+
+        // Adapter blinks after setting the filter settings.
+        let blink_delay = transmitter_guard.blink_delay();
+        transmitter_guard.add_delay(blink_delay);
 
         receiver_guard.clear().await?;
 
@@ -339,14 +346,16 @@ impl Usb2Can {
 
 struct Transmitter {
     serial: Arc<Mutex<SerialStream>>,
+    blink_delay: Duration,
     ready_at: Instant,
     frame_delay_multiplier: f64,
 }
 
 impl Transmitter {
-    fn new(serial: Arc<Mutex<SerialStream>>) -> Self {
+    fn new(serial: Arc<Mutex<SerialStream>>, blink_delay: Duration) -> Self {
         Self {
             serial,
+            blink_delay,
             ready_at: Instant::now(),
             frame_delay_multiplier: 0.0,
         }
@@ -358,6 +367,14 @@ impl Transmitter {
             .await
             .name()
             .ok_or_else(|| Error::GetConfiguration("Failed to get serial port name".into()))
+    }
+
+    const fn blink_delay(&self) -> Duration {
+        self.blink_delay
+    }
+
+    fn set_blink_delay(&mut self, blink_delay: Duration) {
+        self.blink_delay = blink_delay;
     }
 
     async fn serial_baud_rate(&self) -> Result<SerialBaudRate> {
