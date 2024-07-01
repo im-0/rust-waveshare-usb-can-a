@@ -491,10 +491,11 @@ fn check_echo(usb2can_t: &mut Usb2Can, usb2can_r: &mut Usb2Can) -> Result<bool> 
 fn transmit(usb2can: &mut Usb2Can, frame: &Frame) -> Result<()> {
     #![allow(clippy::print_stdout)]
 
-    println!("{:.03} <- {}", timestamp()?, frame);
     usb2can
         .transmit(frame)
-        .context("Failed to transmit CAN frame")
+        .context("Failed to transmit CAN frame")?;
+    println!("{:.03} <- {}", timestamp()?, frame);
+    Ok(())
 }
 
 fn receive(usb2can: &mut Usb2Can) -> Result<Frame> {
