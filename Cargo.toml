@@ -16,12 +16,12 @@ repository = "https://github.com/im-0/rust-waveshare-usb-can-a"
 readme = "README.md"
 
 [workspace.dependencies.anyhow]
-version = "1.0.86"
+version = "1.0.98"
 default-features = false
 features = ["std"]
 
 [workspace.dependencies.clap]
-version = "4.5.8"
+version = "4.5.37"
 default-features = false
 features = ["cargo", "color", "derive", "error-context", "help", "std", "usage", "wrap_help"]
 
@@ -31,37 +31,37 @@ default-features = false
 features = []
 
 [workspace.dependencies.proptest]
-version = "1.5.0"
+version = "1.6.0"
 default-features = false
 features = ["bit-set", "std"]
 
 [workspace.dependencies.proptest-derive]
-version = "0.5.0"
+version = "0.5.1"
 default-features = false
 features = []
 
 [workspace.dependencies.rustix]
-version = "0.38.34"
+version = "1.0.5"
 default-features = false
 features = ["alloc", "pty"]
 
 [workspace.dependencies.serialport]
-version = "4.4.0"
+version = "4.7.1"
 default-features = false
 features = []
 
 [workspace.dependencies.thiserror]
-version = "1.0.61"
+version = "2.0.12"
 default-features = false
 features = []
 
 [workspace.dependencies.tracing]
-version = "0.1.40"
+version = "0.1.41"
 default-features = false
 features = ["std"]
 
 [workspace.dependencies.tracing-subscriber]
-version = "0.3.18"
+version = "0.3.19"
 default-features = false
 features = [
     "ansi",
@@ -73,7 +73,7 @@ features = [
 ]
 
 [workspace.dependencies.tokio]
-version = "1.38.0"
+version = "1.44.2"
 default-features = false
 features = [
     "io-util",
@@ -82,7 +82,7 @@ features = [
 ]
 
 [workspace.dependencies.tokio-serial]
-version = "5.4.4"
+version = "5.4.5"
 default-features = false
 features = []
 
