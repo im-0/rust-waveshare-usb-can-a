@@ -419,7 +419,7 @@ impl Transmitter {
         self.blink_delay
     }
 
-    fn set_blink_delay(&mut self, blink_delay: Duration) {
+    const fn set_blink_delay(&mut self, blink_delay: Duration) {
         self.blink_delay = blink_delay;
     }
 
