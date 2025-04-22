@@ -43,7 +43,7 @@ features = []
 [workspace.dependencies.rustix]
 version = "0.38.34"
 default-features = false
-features = ["pty"]
+features = ["alloc", "pty"]
 
 [workspace.dependencies.serialport]
 version = "4.4.0"

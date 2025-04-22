@@ -616,6 +616,7 @@ mod tests {
         (
             mpt,
             serialport::new(pt_path, 9600)
+                .preserve_dtr_on_open()
                 .open()
                 .expect("serialport::open() failed"),
         )
