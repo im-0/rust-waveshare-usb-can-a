@@ -91,3 +91,15 @@ version = "0.1.0"
 default-features = false
 features = ["sync"]
 path = "lib"
+
+# Fix https://github.com/serialport/serialport-rs/issues/7 by applying
+# patch from https://github.com/serialport/serialport-rs/pull/192.
+[patch.crates-io.serialport]
+git = "https://github.com/im-0/serialport-rs"
+rev = "eb60844272f60d8df5271605a122cb9ef7bf6209"
+
+# Bring back VMIN=1 so async does not break after fixing
+# https://github.com/serialport/serialport-rs/issues/7.
+[patch.crates-io.mio-serial]
+git = "https://github.com/im-0/mio-serial"
+rev = "2411c0abbb976c08f28aa090309c1c81ad605a19"

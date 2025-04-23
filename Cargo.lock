@@ -505,8 +505,7 @@ dependencies = [
 [[package]]
 name = "mio-serial"
 version = "5.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "029e1f407e261176a983a6599c084efd322d9301028055c87174beac71397ba3"
+source = "git+https://github.com/im-0/mio-serial?rev=2411c0abbb976c08f28aa090309c1c81ad605a19#2411c0abbb976c08f28aa090309c1c81ad605a19"
 dependencies = [
  "log",
  "mio",
@@ -769,8 +768,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 [[package]]
 name = "serialport"
 version = "4.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2daa7abb9b965493e3c8f4184c6f46435484ff2538a332b886788cf6768b927b"
+source = "git+https://github.com/im-0/serialport-rs?rev=eb60844272f60d8df5271605a122cb9ef7bf6209#eb60844272f60d8df5271605a122cb9ef7bf6209"
 dependencies = [
  "bitflags 2.9.0",
  "cfg-if",
