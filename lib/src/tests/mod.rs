@@ -11,6 +11,9 @@ use crate::*;
 mod sync;
 mod tokio;
 
+const SERIAL_BAUD_RATE_DEFAULT: SerialBaudRate = SerialBaudRate::R2000000Bd;
+const SERIAL_BAUD_RATE_STABLE: SerialBaudRate = SerialBaudRate::R1228800Bd;
+
 fn initialize_test() -> Result<(String, Option<String>, bool)> {
     // Configure logging.
     static CONFIGURE_LOGGING_ONCE: Once = Once::new();

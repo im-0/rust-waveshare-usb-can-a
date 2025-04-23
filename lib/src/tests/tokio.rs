@@ -5,7 +5,9 @@ use embedded_can::{ExtendedId, Frame as _, Id, StandardId};
 use tokio::try_join;
 use tracing::info;
 
-use crate::tests::{initialize_test, invert_frame};
+use crate::tests::{
+    initialize_test, invert_frame, SERIAL_BAUD_RATE_DEFAULT, SERIAL_BAUD_RATE_STABLE,
+};
 use crate::tokio::Usb2CanBuilder;
 use crate::{
     tokio::Usb2Can, CanBaudRate, Frame, SerialBaudRate, StoredIdFilter, Usb2CanConfiguration,
@@ -26,6 +28,15 @@ async fn stored_id_filter() -> Result<()> {
 
     let (mut usb2can_a, mut usb2can_b) =
         open_adapters(&serial_path, &second_serial_path, &usb2can_conf).await?;
+
+    info!("Configure to the stable serial baud rate value...");
+    reconfigure_adapters(&mut usb2can_a, &mut usb2can_b, |usb2can| async {
+        usb2can
+            .set_serial_baud_rate(SERIAL_BAUD_RATE_STABLE)
+            .await
+            .context("Failed to set serial baud rate of USB2CAN device to stable value")
+    })
+    .await?;
 
     // Blocklist filter.
     let filter = StoredIdFilter::new_block(vec![ExtendedId::ZERO.into()])
@@ -71,6 +82,15 @@ async fn stored_id_filter() -> Result<()> {
 
     self_test(&mut usb2can_a, &mut usb2can_b, false, true).await?;
 
+    info!("Resetting to the original serial baud rate value...");
+    reconfigure_adapters(&mut usb2can_a, &mut usb2can_b, |usb2can| async {
+        usb2can
+            .set_serial_baud_rate(SERIAL_BAUD_RATE_DEFAULT)
+            .await
+            .context("Failed to set serial baud rate of USB2CAN device to original value")
+    })
+    .await?;
+
     Ok(())
 }
 
@@ -89,6 +109,15 @@ async fn can_rates_frame_types_and_filtering() -> Result<()> {
 
     let (mut usb2can_a, mut usb2can_b) =
         open_adapters(&serial_path, &second_serial_path, &usb2can_conf).await?;
+
+    info!("Configure to the stable serial baud rate value...");
+    reconfigure_adapters(&mut usb2can_a, &mut usb2can_b, |usb2can| async {
+        usb2can
+            .set_serial_baud_rate(SERIAL_BAUD_RATE_STABLE)
+            .await
+            .context("Failed to set serial baud rate of USB2CAN device to stable value")
+    })
+    .await?;
 
     for variable_encoding in [false, true] {
         for can_baud_rate in [
@@ -167,6 +196,15 @@ async fn can_rates_frame_types_and_filtering() -> Result<()> {
         }
     }
 
+    info!("Resetting to the original serial baud rate value...");
+    reconfigure_adapters(&mut usb2can_a, &mut usb2can_b, |usb2can| async {
+        usb2can
+            .set_serial_baud_rate(SERIAL_BAUD_RATE_DEFAULT)
+            .await
+            .context("Failed to set serial baud rate of USB2CAN device to original value")
+    })
+    .await?;
+
     Ok(())
 }
 
@@ -213,7 +251,7 @@ async fn serial_rates() -> Result<()> {
     info!("Resetting to the original serial baud rate value...");
     reconfigure_adapters(&mut usb2can_a, &mut usb2can_b, |usb2can| async {
         usb2can
-            .set_serial_baud_rate(SerialBaudRate::R2000000Bd)
+            .set_serial_baud_rate(SERIAL_BAUD_RATE_DEFAULT)
             .await
             .context("Failed to set serial baud rate of USB2CAN device to original value")
     })
