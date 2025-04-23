@@ -2,6 +2,7 @@
 
 if [ $# -eq 1 ]; then
 	export HW_TEST_SERIAL_PATH="${1}"
+	unset HW_TEST_SECOND_SERIAL_PATH
 elif [ $# -eq 2 ]; then
 	export HW_TEST_SERIAL_PATH="${1}"
 	export HW_TEST_SECOND_SERIAL_PATH="${2}"
